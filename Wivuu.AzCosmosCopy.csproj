@@ -11,9 +11,27 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>AzCosmosCopy</ToolCommandName>
     <PackageOutputPath>./nupkg</PackageOutputPath>
-  </PropertyGroup>
 
+    <VersionPrefix>0.0.1</VersionPrefix>
+    <Authors>Erik O'Leary</Authors>
+    <Company>Wivuu</Company>
+    <Product>Wivuu AzCosmosCopy</Product>
+    <Description>Copy cosmos db databases.</Description>
+    <ReleaseNotes>
+    - Initial pre-release
+    </ReleaseNotes>
+    <PackageTags>cosmos;cosmosdb;azure;copy</PackageTags>
+    <PackageProjectUrl>https://github.com/wivuu/Wivuu.AzCosmosCopy</PackageProjectUrl>
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <RepositoryUrl>https://github.com/wivuu/Wivuu.AzCosmosCopy.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- <IncludeSymbols>true</IncludeSymbols> -->
+    <!-- <SymbolPackageFormat>snupkg</SymbolPackageFormat> -->
+
+  </PropertyGroup>
+  
   <ItemGroup>
+    <None Include="LICENSE.md" Pack="true" PackagePath="$(PackageLicenseFile)"/>
   </ItemGroup>
 
   <ItemGroup>
