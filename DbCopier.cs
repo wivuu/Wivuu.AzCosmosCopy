@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
@@ -52,71 +54,39 @@ class DbCopier
 {
     static readonly RecyclableMemoryStreamManager streamManager = new ();
 
-    record CopyRow(string container, string progress);
+    public abstract record CopyDiagnostic(string container);
+    public record CopyDiagnosticMessage(string container, string message, bool warning = false) : CopyDiagnostic(container);
+    public record CopyDiagnosticProgress(string container, int progress, int total) : CopyDiagnostic(container);
+    public record CopyDiagnosticDone(string container) : CopyDiagnostic(container);
+    public record CopyDiagnosticFailed(string container, Exception exception) : CopyDiagnostic(container);
 
-    static void RenderCopyGrid(SortedList<string, CopyRow> rows)
+    /// <summary>
+    /// Copy with interactive grid
+    /// </summary>
+    internal static async Task<bool> CopyWithDetails(DbCopierOptions options, CancellationToken cancellationToken = default)
     {
-        var table = new Table()
-            .Expand()
-            .Border(TableBorder.Horizontal)
-            .AddColumn("Container")
-            .AddColumn("Progress (%)")
-            ;
-
-        var any = false;
-        foreach (var (container, (_, progress)) in rows)
-        {
-            any = true;
-            table.AddRow(container, progress);
-        }
-
-        if (!any)
-            table.AddRow("Starting...");
-
-        if (!System.Diagnostics.Debugger.IsAttached)
-            AnsiConsole.Console.Clear(false);
-
-        AnsiConsole.Render(
-            new FigletText("AzTableCopy")
-                .LeftAligned()
-                .Color(Color.Blue));
-
-        AnsiConsole.Render(table);
-    }
-
-    internal static async Task<bool> CopyAsync(DbCopierOptions options, CancellationToken cancellationToken = default)
-    {
-        var (sourceClient, destClient, sourceDatabase, destinationDatabase) = options;
-
-        // Create destination database
-        var sourceDbClient = sourceClient.GetDatabase(sourceDatabase);
-        var destDbClient   = destClient.GetDatabase(destinationDatabase);
-
         try
         {
             if (!System.Diagnostics.Debugger.IsAttached)
                 AnsiConsole.Console.Clear(false);
 
-            var rows = new SortedList<string, CopyRow>();
+            var rows = new SortedList<string, CopyDiagnostic>();
             RenderCopyGrid(rows);
             
-            var channel = Channel.CreateBounded<CopyRow>(
+            var channel = Channel.CreateBounded<CopyDiagnostic>(
                 new BoundedChannelOptions(options.UIRenderQueueCapacity) 
                 { 
                     FullMode = BoundedChannelFullMode.DropOldest 
                 });
-
-            // Execute copy
-            var copyTask = CopyDataPipeline(channel.Writer);
             
             // Rate limiting render loop
-            using var tcs = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             
             _ = Task.Run(async () => 
             {
-                SortedList<string, CopyRow> copyBuffer = new();
+                SortedList<string, CopyDiagnostic> copyBuffer = new();
 
-                while (!tcs.IsCancellationRequested)
+                while (!cancellationSource.IsCancellationRequested)
                 {
                     lock (rows)
                     {
@@ -124,26 +94,25 @@ class DbCopier
                         {
                             RenderCopyGrid(rows);
 
-                            copyBuffer = new SortedList<string, CopyRow>(rows);
+                            copyBuffer = new SortedList<string, CopyDiagnostic>(rows);
                         }
                     }
 
-                    await Task.Delay(500, tcs.Token);
+                    await Task.Delay(500, cancellationSource.Token);
                 }
             });
 
             // For every message in the channel, update the grid
-            await foreach (var item in channel.Reader.ReadAllAsync())
+            await foreach (var diag in CopyInternal(options, cancellationToken))
             {
                 lock (rows)
                 {
-                    rows.Remove(item.container);
-                    rows.Add(item.container, item);
+                    rows.Remove(diag.container);
+                    rows.Add(diag.container, diag);
                 }
             }
 
-            await copyTask;
-            tcs.Cancel();
+            cancellationSource.Cancel();
             
             RenderCopyGrid(rows);
 
@@ -157,8 +126,108 @@ class DbCopier
             AnsiConsole.WriteException(error);
             return false;
         }
+        
+        static void RenderCopyGrid(SortedList<string, CopyDiagnostic> rows)
+        {
+            var table = new Table()
+                .Expand()
+                .Border(TableBorder.Horizontal)
+                .AddColumn("Container")
+                .AddColumn("Progress (%)")
+                ;
 
-        async Task CopyDataPipeline(ChannelWriter<CopyRow> channel)
+            var any = false;
+            foreach (var (container, diag) in rows)
+            {
+                any = true;
+                
+                table.AddRow(container, diag switch 
+                {
+                    CopyDiagnosticMessage(_, var message, var warning) => warning ? $"[yellow]{warning}[/yellow/" : message,
+                    CopyDiagnosticProgress(_, var p, var total) => $"{(float)p/total:p0} ({p}/{total})",
+                    CopyDiagnosticDone => $"[green]Done[/]",
+                    CopyDiagnosticFailed(_, var e) => e switch
+                    {
+                        TaskCanceledException => "[yellow]Cancelled[/]",
+                        CosmosException       => "[red]Failed (CosmosException)[/]",
+                        _                     => "[red]Failed[/]"
+                    },
+                    _ => ""
+                });
+            }
+
+            if (!any)
+                table.AddRow("Starting...");
+
+            if (!System.Diagnostics.Debugger.IsAttached)
+                AnsiConsole.Console.Clear(false);
+
+            AnsiConsole.Render(
+                new FigletText("AzTableCopy")
+                    .LeftAligned()
+                    .Color(Color.Blue));
+
+            AnsiConsole.Render(table);
+        }
+    }
+
+    /// <summary>
+    /// Copy with minimal output diagnostics
+    /// </summary>
+    internal static async Task<bool> CopyMinimal(DbCopierOptions options, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            Console.WriteLine("AzTableCopy");
+            Console.WriteLine("Starting...");
+
+            Stopwatch sw = new();
+            sw.Start();
+
+            await foreach (var diag in CopyInternal(options, cancellationToken))
+            {
+                
+            }
+
+            sw.Stop();
+
+            Console.WriteLine($"Complete. Total elapsed: {sw.Elapsed.TotalSeconds:#,0.###} seconds");
+
+            return true;
+        }
+        catch (Exception error)
+        {
+            Console.WriteLine(error);
+            return false;
+        }
+    }
+
+    private static async IAsyncEnumerable<CopyDiagnostic> CopyInternal(
+        DbCopierOptions options, 
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var (sourceClient, destClient, sourceDatabase, destinationDatabase) = options;
+
+        // Create destination database
+        var sourceDbClient = sourceClient.GetDatabase(sourceDatabase);
+        var destDbClient   = destClient.GetDatabase(destinationDatabase);
+
+        var channel = Channel.CreateBounded<CopyDiagnostic>(
+            new BoundedChannelOptions(options.UIRenderQueueCapacity) 
+            { 
+                FullMode = BoundedChannelFullMode.DropOldest 
+            });
+
+        // Execute copy
+        var copyTask = CopyDataPipeline(channel.Writer);
+
+        // For every message in the channel, update the grid
+        await foreach (var item in channel.Reader.ReadAllAsync())
+            yield return item;
+
+        await copyTask;
+
+        async Task CopyDataPipeline(ChannelWriter<CopyDiagnostic> channel)
         {
             var sourceDb = sourceClient.GetDatabase(sourceDatabase);
 
@@ -185,7 +254,7 @@ class DbCopier
                     }
                     catch (CosmosException)
                     {
-                        channel.TryWrite(new ("", "[yellow]Unable to create destination database - may already be copied[/]"));
+                        channel.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
                         return;
                     }
 
@@ -196,7 +265,7 @@ class DbCopier
                     {
                         foreach (var c in await feed.ReadNextAsync())
                         {
-                            channel.TryWrite(new (c.Id, "Queued..."));
+                            channel.TryWrite(new CopyDiagnosticMessage(c.Id, "Queued..."));
 
                             while (!buffer.Post(c))
                                 await Task.Yield();
@@ -214,15 +283,15 @@ class DbCopier
             }
         }
 
-        Func<ContainerProperties, Task> CopyContainerFactory(ChannelWriter<CopyRow> messageChannel) => async (ContainerProperties c) =>
+        Func<ContainerProperties, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (ContainerProperties c) =>
         {
-            messageChannel.TryWrite(new (c.Id, "Creating container..."));
+            messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Creating container..."));
 
             try
             {
                 await destDbClient.CreateContainerIfNotExistsAsync(c);
 
-                messageChannel.TryWrite(new (c.Id, "Copying data..."));
+                messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
 
                 var sourceContainer = sourceDbClient.GetContainer(c.Id);
                 var destContainer   = destDbClient.GetContainer(c.Id);
@@ -237,7 +306,7 @@ class DbCopier
 
                     var buffer = new BufferBlock<Document>(new () 
                     { 
-                        BoundedCapacity = options.MaxDocCopyBufferSize, 
+                        BoundedCapacity   = options.MaxDocCopyBufferSize, 
                         CancellationToken = cancellationToken 
                     });
 
@@ -259,12 +328,13 @@ class DbCopier
 
                             var p = Interlocked.Increment(ref processed);
 
-                            messageChannel.TryWrite(new (c.Id, $"{(float)p/total:p0} ({p}/{total})"));
+                            messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, p, total));
                         },
                         new () 
                         { 
-                            MaxDegreeOfParallelism = options.MaxDocCopyParallel, 
-                            CancellationToken = cancellationToken 
+                            MaxDegreeOfParallelism    = options.MaxDocCopyParallel,
+                            SingleProducerConstrained = true,
+                            CancellationToken         = cancellationToken
                         });
 
                     using (buffer.LinkTo(consumer, new() { PropagateCompletion = true }))
@@ -298,19 +368,11 @@ class DbCopier
                     }
                 }
 
-                messageChannel.TryWrite(new (c.Id, "[green]Done[/]"));
+                messageChannel.TryWrite(new CopyDiagnosticDone(c.Id));
             }
-            catch (CosmosException e)
+            catch (Exception e)
             {
-                messageChannel.TryWrite(new (c.Id, $"[red]Failed ({e.GetType().Name})[/]"));
-            }
-            catch (TaskCanceledException)
-            {
-                messageChannel.TryWrite(new (c.Id, $"[yellow]Cancelled[/]"));
-            }
-            catch (Exception)
-            {
-                messageChannel.TryWrite(new (c.Id, $"[red]Failed[/]"));
+                messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
             }
         };
     }

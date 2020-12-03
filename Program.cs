@@ -3,7 +3,6 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Threading;
 using Microsoft.Azure.Cosmos;
-using Spectre.Console;
 
 var root = new RootCommand
 {
@@ -22,6 +21,10 @@ var root = new RootCommand
     new Option<string?>(
         new [] { "--dd", "--destination-database" }, "Destination database name"
     ),
+
+    new Option(
+        new [] { "-m", "--minimal" }, "Output minimal information"
+    )
 };
 
 // Add validators
@@ -45,19 +48,25 @@ root.Handler = CommandHandler.Create(
         if (args.Destination is null && args.DestinationDatabase == args.SourceDatabase)
             throw new System.Exception("--destination cannot be copied to --source with the same --destination-database name");
 
-        var options = new CosmosClientOptions 
+        var dbOptions = new CosmosClientOptions 
         { 
             ConnectionMode     = ConnectionMode.Direct,
             AllowBulkExecution = true,
         };
 
-        var sourceClient = new CosmosClient(args.Source, options);
-        var destClient   = new CosmosClient(args.Destination ?? args.Source, options);
+        var sourceClient = new CosmosClient(args.Source, dbOptions);
+        var destClient   = new CosmosClient(args.Destination ?? args.Source, dbOptions);
 
-        var result = await DbCopier.CopyAsync(
-            options: new(sourceClient, destClient, args.SourceDatabase, args.DestinationDatabase ?? args.SourceDatabase),
-            cancellation.Token
+        var copyOptions = new DbCopierOptions(
+            sourceClient, 
+            destClient, 
+            args.SourceDatabase, 
+            args.DestinationDatabase ?? args.SourceDatabase
         );
+
+        var result = args.Minimal
+            ? await DbCopier.CopyMinimal(copyOptions, cancellation.Token)
+            : await DbCopier.CopyWithDetails(copyOptions, cancellation.Token);
 
         return result ? 0 : 1;
     });
@@ -77,4 +86,5 @@ class Args
     public string SourceDatabase { get; init; } = default!;
     public string? Destination { get; init; }
     public string? DestinationDatabase { get; init; }
+    public bool Minimal { get; set; }
 }
