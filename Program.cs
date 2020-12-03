@@ -1,6 +1,9 @@
-﻿using System.CommandLine;
+﻿using System;
+using System.CommandLine;
 using System.CommandLine.Invocation;
+using System.Threading;
 using Microsoft.Azure.Cosmos;
+using Spectre.Console;
 
 var root = new RootCommand
 {
@@ -33,6 +36,8 @@ root.AddValidator(result =>
 
 root.Description = "Copy Cosmos database from source to destination";
 
+using var cancellation = new CancellationTokenSource();
+
 // Handle command
 root.Handler = CommandHandler.Create(
     async (Args args) =>
@@ -49,9 +54,21 @@ root.Handler = CommandHandler.Create(
         var sourceClient = new CosmosClient(args.Source, options);
         var destClient   = new CosmosClient(args.Destination ?? args.Source, options);
 
-        return await DbCopier.CopyAsync(sourceClient, destClient, args.SourceDatabase, args.DestinationDatabase ?? args.SourceDatabase)
-            ? 0 : 1;
+        var result = await DbCopier.CopyAsync(
+            options: new(sourceClient, destClient, args.SourceDatabase, args.DestinationDatabase ?? args.SourceDatabase),
+            cancellation.Token
+        );
+
+        return result ? 0 : 1;
     });
+
+// Handle cancel
+Console.CancelKeyPress += new ConsoleCancelEventHandler((sender, e) => 
+{
+    cancellation.Cancel();
+    
+    AnsiConsole.WriteLine("Cancellation requested");
+});
 
 await root.InvokeAsync(args);
 

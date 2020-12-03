@@ -14,6 +14,14 @@ using Spectre.Console;
 using Microsoft.IO;
 using BlushingPenguin.JsonPath;
 
+record DbCopierOptions
+(
+    CosmosClient SourceClient,
+    CosmosClient DestClient,
+    string SourceDatabase,
+    string DestinationDatabase
+);
+
 class DbCopier
 {
     const int MaxContainerParallel = 10;
@@ -55,8 +63,10 @@ class DbCopier
         AnsiConsole.Render(table);
     }
 
-    internal static async Task<bool> CopyAsync(CosmosClient sourceClient, CosmosClient destClient, string sourceDatabase, string destinationDatabase, CancellationToken cancellationToken = default)
+    internal static async Task<bool> CopyAsync(DbCopierOptions options, CancellationToken cancellationToken = default)
     {
+        var (sourceClient, destClient, sourceDatabase, destinationDatabase) = options;
+
         // Create destination database
         var sourceDbClient = sourceClient.GetDatabase(sourceDatabase);
         var destDbClient   = destClient.GetDatabase(destinationDatabase);
