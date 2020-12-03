@@ -16,7 +16,7 @@ using Microsoft.IO;
 using Spectre.Console;
 using BlushingPenguin.JsonPath;
 
-record DbCopierOptions
+public record DbCopierOptions
 (
     CosmosClient SourceClient,
     CosmosClient DestClient,
@@ -50,7 +50,7 @@ record DbCopierOptions
     public int UIRenderQueueCapacity { get; init; } = 1000;
 }
 
-class DbCopier
+public class DbCopier
 {
     static readonly RecyclableMemoryStreamManager streamManager = new ();
 
@@ -103,7 +103,7 @@ class DbCopier
             });
 
             // For every message in the channel, update the grid
-            await foreach (var diag in CopyInternal(options, cancellationToken))
+            await foreach (var diag in CopyAsync(options, cancellationToken))
             {
                 lock (rows)
                 {
@@ -143,14 +143,13 @@ class DbCopier
                 
                 table.AddRow(container, diag switch 
                 {
-                    CopyDiagnosticMessage(_, var message, var warning) => warning ? $"[yellow]{message}[/]" : message,
+                    CopyDiagnosticMessage(_, var message, var warning) => warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message),
                     CopyDiagnosticProgress(_, var p, var total) => $"{(float)p/total:p0} ({p}/{total})",
                     CopyDiagnosticDone => $"[green]Done[/]",
                     CopyDiagnosticFailed(_, var e) => e switch
                     {
                         TaskCanceledException => "[yellow]Cancelled[/]",
-                        CosmosException       => "[red]Failed (CosmosException)[/]",
-                        _                     => "[red]Failed[/]"
+                        _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
                     },
                     _ => ""
                 });
@@ -184,7 +183,7 @@ class DbCopier
             Stopwatch sw = new();
             sw.Start();
 
-            await foreach (var diag in CopyInternal(options, cancellationToken))
+            await foreach (var diag in CopyAsync(options, cancellationToken))
             {
                 switch (diag)
                 {
@@ -214,7 +213,7 @@ class DbCopier
         }
     }
 
-    private static async IAsyncEnumerable<CopyDiagnostic> CopyInternal(
+    public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
         DbCopierOptions options, 
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -229,12 +228,13 @@ class DbCopier
         // Execute copy
         var copyTask = CopyDataPipeline(channel.Writer);
 
-        // For every message in the channel, update the grid
+        // For every message in the channel, yield back
         await foreach (var item in channel.Reader.ReadAllAsync())
             yield return item;
 
         await copyTask;
 
+        // Pipeline which copies all containers
         async Task CopyDataPipeline(ChannelWriter<CopyDiagnostic> channel)
         {
             var sourceDb = sourceClient.GetDatabase(sourceDatabase);
@@ -291,6 +291,7 @@ class DbCopier
             }
         }
 
+        // Pipeline which copies a single container
         Func<ContainerProperties, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (ContainerProperties c) =>
         {
             try
@@ -333,9 +334,9 @@ class DbCopier
 
                             resp.EnsureSuccessStatusCode();
 
-                            var p = Interlocked.Increment(ref processed);
+                            var progress = Interlocked.Increment(ref processed);
 
-                            messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, p, total));
+                            messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total));
                         },
                         new () 
                         { 
@@ -384,11 +385,17 @@ class DbCopier
         };
     }
 
+    /// <summary>
+    /// Document response container
+    /// </summary>
     class DocumentContainer
     {
         public List<Document> Documents { get; set; } = default!;
     }
 
+    /// <summary>
+    /// Single document in response
+    /// </summary>
     class Document
     {
         [JsonIgnore, JsonPropertyName("_rid")]
