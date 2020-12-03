@@ -186,18 +186,30 @@ class DbCopier
 
             await foreach (var diag in CopyInternal(options, cancellationToken))
             {
-                
+                switch (diag)
+                {
+                    case CopyDiagnosticMessage(var container, var message, _):
+                        AnsiConsole.WriteLine($"{container}\t\t- {message}");
+                        break;
+                    case CopyDiagnosticDone(var container):
+                        AnsiConsole.WriteLine($"{container}\t\t- Done");
+                        break;
+                    case CopyDiagnosticFailed(var container, var error):
+                        AnsiConsole.Write($"{container} -");
+                        AnsiConsole.WriteException(error);
+                        break;
+                }
             }
 
             sw.Stop();
 
-            Console.WriteLine($"Complete. Total elapsed: {sw.Elapsed.TotalSeconds:#,0.###} seconds");
+            Console.WriteLine($"Finished after {sw.Elapsed.TotalSeconds:#,0.###} seconds");
 
             return true;
         }
         catch (Exception error)
         {
-            Console.WriteLine(error);
+            AnsiConsole.WriteException(error);
             return false;
         }
     }
