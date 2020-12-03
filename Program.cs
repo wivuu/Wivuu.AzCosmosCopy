@@ -13,11 +13,11 @@ var root = new RootCommand
     new Option<string?>(
         new [] { "--sd", "--source-database" }, "Source database name (required)"
     ),
-    
+
     new Option<string?>(
         new [] { "-d", "--destination" }, "Destination connection string"
     ),
-    
+
     new Option<string?>(
         new [] { "--dd", "--destination-database" }, "Destination database name"
     ),
@@ -32,7 +32,7 @@ root.AddValidator(result => result.Children.Contains("-s") ? default : "--source
 
 root.AddValidator(result => result.Children.Contains("--sd") ? default : "--source-database is required");
 
-root.AddValidator(result => 
+root.AddValidator(result =>
     !result.Children.Contains("-d") && !result.Children.Contains("--dd")
     ? "--destination must be specified if --destination-database is not" : default
 );
@@ -48,19 +48,21 @@ root.Handler = CommandHandler.Create(
         if (args.Destination is null && args.DestinationDatabase == args.SourceDatabase)
             throw new System.Exception("--destination cannot be copied to --source with the same --destination-database name");
 
-        var dbOptions = new CosmosClientOptions 
-        { 
-            ConnectionMode     = ConnectionMode.Direct,
-            AllowBulkExecution = true,
+        var dbOptions = new CosmosClientOptions
+        {
+            ConnectionMode                        = ConnectionMode.Direct,
+            AllowBulkExecution                    = true,
+            MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromMinutes(5),
+            MaxRetryAttemptsOnRateLimitedRequests = 60,
         };
 
         var sourceClient = new CosmosClient(args.Source, dbOptions);
         var destClient   = new CosmosClient(args.Destination ?? args.Source, dbOptions);
 
         var copyOptions = new DbCopierOptions(
-            sourceClient, 
-            destClient, 
-            args.SourceDatabase, 
+            sourceClient,
+            destClient,
+            args.SourceDatabase,
             args.DestinationDatabase ?? args.SourceDatabase
         );
 
@@ -72,7 +74,7 @@ root.Handler = CommandHandler.Create(
     });
 
 // Handle cancel
-Console.CancelKeyPress += new ConsoleCancelEventHandler((sender, e) => 
+Console.CancelKeyPress += new ConsoleCancelEventHandler((sender, e) =>
 {
     e.Cancel = true;
     cancellation.Cancel();
