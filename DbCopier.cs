@@ -10,8 +10,8 @@ using System.Threading.Channels;
 using System.Threading;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Linq;
-using Spectre.Console;
 using Microsoft.IO;
+using Spectre.Console;
 using BlushingPenguin.JsonPath;
 
 record DbCopierOptions
@@ -20,15 +20,36 @@ record DbCopierOptions
     CosmosClient DestClient,
     string SourceDatabase,
     string DestinationDatabase
-);
+)
+{
+    /// <summary>
+    /// Execute N container copies in parallel
+    /// </summary>
+    public int MaxContainerParallel { get; init; } = 10;
+
+    /// <summary>
+    /// Enqueue N containers
+    /// </summary>
+    public int MaxContainerBufferSize { get; init; } = 10;
+
+    /// <summary>
+    /// Execute N document copies in parallel per container copy operation
+    /// </summary>
+    public int MaxDocCopyParallel { get; init; } = 10;
+
+    /// <summary>
+    /// Enqueue N documents per container copy operation
+    /// </summary>
+    public int MaxDocCopyBufferSize { get; init; } = 100;
+
+    /// <summary>
+    /// Enqueue N table display render updates (affects rendering only)
+    /// </summary>
+    public int UIRenderQueueCapacity { get; init; } = 1000;
+}
 
 class DbCopier
 {
-    const int MaxContainerParallel = 10;
-    const int MaxContainerBufferSize = 10;
-    const int MaxDocCopyParallel = 100;
-    const int MaxDocCopyBufferSize = 100;
-    const int UIRenderQueueCapacity = 1000;
     static readonly RecyclableMemoryStreamManager streamManager = new ();
 
     record CopyRow(string container, string progress);
@@ -80,7 +101,7 @@ class DbCopier
             RenderCopyGrid(rows);
             
             var channel = Channel.CreateBounded<CopyRow>(
-                new BoundedChannelOptions(UIRenderQueueCapacity) 
+                new BoundedChannelOptions(options.UIRenderQueueCapacity) 
                 { 
                     FullMode = BoundedChannelFullMode.DropOldest 
                 });
@@ -143,13 +164,13 @@ class DbCopier
 
             var buffer = new BufferBlock<ContainerProperties>(new () 
             { 
-                BoundedCapacity   = MaxContainerBufferSize, 
+                BoundedCapacity   = options.MaxContainerBufferSize, 
                 CancellationToken = cancellationToken 
             });
 
             var action = new ActionBlock<ContainerProperties>(CopyContainerFactory(channel), new () 
             { 
-                MaxDegreeOfParallelism    = MaxContainerParallel,
+                MaxDegreeOfParallelism    = options.MaxContainerParallel,
                 SingleProducerConstrained = true,
                 CancellationToken         = cancellationToken,
             });
@@ -213,7 +234,12 @@ class DbCopier
                 {
                     var processed = 0;
                     var (firstPart, pkPath) = c.PartitionKeyPath[1..].Replace('/', '.').SplitTwo('.');
-                    var buffer = new BufferBlock<Document>(new () { BoundedCapacity = MaxDocCopyBufferSize });
+
+                    var buffer = new BufferBlock<Document>(new () 
+                    { 
+                        BoundedCapacity = options.MaxDocCopyBufferSize, 
+                        CancellationToken = cancellationToken 
+                    });
 
                     // Consumer
                     var consumer = new ActionBlock<Document>(
@@ -235,7 +261,11 @@ class DbCopier
 
                             messageChannel.TryWrite(new (c.Id, $"{(float)p/total:p0} ({p}/{total})"));
                         },
-                        new () { MaxDegreeOfParallelism = MaxDocCopyParallel });
+                        new () 
+                        { 
+                            MaxDegreeOfParallelism = options.MaxDocCopyParallel, 
+                            CancellationToken = cancellationToken 
+                        });
 
                     using (buffer.LinkTo(consumer, new() { PropagateCompletion = true }))
                     {
@@ -245,7 +275,7 @@ class DbCopier
                             using var docFeed = sourceContainer.GetItemQueryStreamIterator();
 
                             // Producer
-                            while (docFeed.HasMoreResults)
+                            while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
                             {
                                 using var response = await docFeed.ReadNextAsync();
                                 
@@ -273,6 +303,10 @@ class DbCopier
             catch (CosmosException e)
             {
                 messageChannel.TryWrite(new (c.Id, $"[red]Failed ({e.GetType().Name})[/]"));
+            }
+            catch (TaskCanceledException)
+            {
+                messageChannel.TryWrite(new (c.Id, $"[yellow]Cancelled[/]"));
             }
             catch (Exception)
             {

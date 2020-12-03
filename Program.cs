@@ -65,9 +65,8 @@ root.Handler = CommandHandler.Create(
 // Handle cancel
 Console.CancelKeyPress += new ConsoleCancelEventHandler((sender, e) => 
 {
+    e.Cancel = true;
     cancellation.Cancel();
-    
-    AnsiConsole.WriteLine("Cancellation requested");
 });
 
 await root.InvokeAsync(args);
