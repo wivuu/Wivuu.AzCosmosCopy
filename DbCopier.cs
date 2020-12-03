@@ -37,7 +37,7 @@ record DbCopierOptions
     /// <summary>
     /// Execute N document copies in parallel per container copy operation
     /// </summary>
-    public int MaxDocCopyParallel { get; init; } = 10;
+    public int MaxDocCopyParallel { get; init; } = 100;
 
     /// <summary>
     /// Enqueue N documents per container copy operation
@@ -143,7 +143,7 @@ class DbCopier
                 
                 table.AddRow(container, diag switch 
                 {
-                    CopyDiagnosticMessage(_, var message, var warning) => warning ? $"[yellow]{warning}[/yellow/" : message,
+                    CopyDiagnosticMessage(_, var message, var warning) => warning ? $"[yellow]{message}[/]" : message,
                     CopyDiagnosticProgress(_, var p, var total) => $"{(float)p/total:p0} ({p}/{total})",
                     CopyDiagnosticDone => $"[green]Done[/]",
                     CopyDiagnosticFailed(_, var e) => e switch
@@ -220,10 +220,6 @@ class DbCopier
     {
         var (sourceClient, destClient, sourceDatabase, destinationDatabase) = options;
 
-        // Create destination database
-        var sourceDbClient = sourceClient.GetDatabase(sourceDatabase);
-        var destDbClient   = destClient.GetDatabase(destinationDatabase);
-
         var channel = Channel.CreateBounded<CopyDiagnostic>(
             new BoundedChannelOptions(options.UIRenderQueueCapacity) 
             { 
@@ -297,16 +293,15 @@ class DbCopier
 
         Func<ContainerProperties, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (ContainerProperties c) =>
         {
-            messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Creating container..."));
-
             try
             {
-                await destDbClient.CreateContainerIfNotExistsAsync(c);
+                var sourceContainer = sourceClient.GetContainer(sourceDatabase, c.Id);
+                var destContainer   = destClient.GetContainer(destinationDatabase, c.Id);
+
+                // Create dest container
+                await destClient.GetDatabase(destinationDatabase).CreateContainerAsync(c);
 
                 messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
-
-                var sourceContainer = sourceDbClient.GetContainer(c.Id);
-                var destContainer   = destDbClient.GetContainer(c.Id);
 
                 // Getting number of documents
                 var total = await sourceContainer.GetItemLinqQueryable<object>(true).CountAsync();
