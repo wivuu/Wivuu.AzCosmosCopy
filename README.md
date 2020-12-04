@@ -1,6 +1,6 @@
 # AzCosmosCopy
 
-[![wivuu.azcosmoscopy](https://img.shields.io/nuget/v/azcosmoscopy.svg?label=azcosmoscopy)](https://www.nuget.org/packages/Wivuu.JsonPolymorphism/)
+[![wivuu.azcosmoscopy](https://img.shields.io/nuget/v/azcosmoscopy.svg?label=azcosmoscopy)](https://www.nuget.org/packages/AzCosmosCopy/)
 
 
 Simple CLI application which copies azure cosmos DB database to same or different cosmos account.
