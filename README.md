@@ -1,4 +1,5 @@
 # AzCosmosCopy
+![Nuget](https://github.com/wivuu/Wivuu.AzCosmosCopy/workflows/Nuget/badge.svg)
 
 [![wivuu.azcosmoscopy](https://img.shields.io/nuget/v/azcosmoscopy.svg?label=azcosmoscopy)](https://www.nuget.org/packages/AzCosmosCopy/)
 
