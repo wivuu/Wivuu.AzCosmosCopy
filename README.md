@@ -1,10 +1,33 @@
 # AzCosmosCopy
 
-Copies input azure cosmos db databases
+Simple CLI application which copies azure cosmos DB database to same or different cosmos account.
 
 ![](./sample.png)
 
-## Ref
-- https://devblogs.microsoft.com/cosmosdb/introducing-bulk-support-in-the-net-sdk/
-- https://github.com/Azure/azure-cosmosdb-bulkexecutor-dotnet-getting-started
-- https://github.com/dotnet/command-line-api
+## Usage
+
+Install new
+```sh
+dotnet tool install -g wivuu.azcosmoscopy
+```
+
+Upgrade to latest
+```sh
+dotnet tool update -g wivuu.azcosmoscopy
+```
+
+Command line
+```
+Options:
+  -s, --source <source>                                  Source connection string (required)
+  --sd, --source-database <source-database>              Source database name (required)    
+  -d, --destination <destination>                        Destination connection string      
+  --dd, --destination-database <destination-database>    Destination database name
+  -m, --minimal                                          Output minimal information
+  --version                                              Show version information
+  -?, -h, --help                                         Show help and usage information   
+```
+
+
+## Coming soon
+- Support for tweaking concurrency parameters to not overwhelm low RU containers
