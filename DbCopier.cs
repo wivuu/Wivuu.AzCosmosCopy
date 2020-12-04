@@ -68,7 +68,7 @@ public class DbCopier
         try
         {
             AnsiConsole.Render(
-                new FigletText("AzTableCopy")
+                new FigletText("AzCosmosCopy")
                     .LeftAligned()
                     .Color(Color.Blue));
 
@@ -136,7 +136,7 @@ public class DbCopier
     {
         try
         {
-            Console.WriteLine("AzTableCopy");
+            Console.WriteLine("AzCosmosCopy");
             Console.WriteLine("Starting...");
 
             Stopwatch sw = new();
