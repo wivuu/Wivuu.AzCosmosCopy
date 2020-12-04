@@ -1,5 +1,8 @@
 # AzCosmosCopy
 
+[![wivuu.azcosmoscopy](https://img.shields.io/nuget/v/azcosmoscopy.svg?label=azcosmoscopy)](https://www.nuget.org/packages/Wivuu.JsonPolymorphism/)
+
+
 Simple CLI application which copies azure cosmos DB database to same or different cosmos account.
 
 ![](./sample.png)
@@ -8,12 +11,12 @@ Simple CLI application which copies azure cosmos DB database to same or differen
 
 Install new
 ```sh
-dotnet tool install -g wivuu.azcosmoscopy
+dotnet tool install -g azcosmoscopy
 ```
 
 Upgrade to latest
 ```sh
-dotnet tool update -g wivuu.azcosmoscopy
+dotnet tool update -g azcosmoscopy
 ```
 
 Command line
