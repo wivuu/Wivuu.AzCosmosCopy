@@ -67,106 +67,65 @@ public class DbCopier
     {
         try
         {
-            if (!System.Diagnostics.Debugger.IsAttached)
-                AnsiConsole.Console.Clear(false);
-
-            var rows = new SortedList<string, CopyDiagnostic>();
-            RenderCopyGrid(rows);
-            
-            var channel = Channel.CreateBounded<CopyDiagnostic>(
-                new BoundedChannelOptions(options.UIRenderQueueCapacity) 
-                { 
-                    FullMode = BoundedChannelFullMode.DropOldest 
-                });
-            
-            // Rate limiting render loop
-            using var cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            
-            _ = Task.Run(async () => 
-            {
-                SortedList<string, CopyDiagnostic> copyBuffer = new();
-
-                while (!cancellationSource.IsCancellationRequested)
-                {
-                    lock (rows)
-                    {
-                        if (rows.Except(copyBuffer).Any())
-                        {
-                            RenderCopyGrid(rows);
-
-                            copyBuffer = new SortedList<string, CopyDiagnostic>(rows);
-                        }
-                    }
-
-                    await Task.Delay(500, cancellationSource.Token);
-                }
-            });
-
-            // For every message in the channel, update the grid
-            await foreach (var diag in CopyAsync(options, cancellationToken))
-            {
-                lock (rows)
-                {
-                    rows.Remove(diag.container);
-                    rows.Add(diag.container, diag);
-                }
-            }
-
-            cancellationSource.Cancel();
-            
-            RenderCopyGrid(rows);
-
-            return true;
-        }
-        catch (Exception error)
-        {
-            if (!System.Diagnostics.Debugger.IsAttached)
-                AnsiConsole.Console.Clear(false);
-
-            AnsiConsole.WriteException(error);
-            return false;
-        }
-        
-        static void RenderCopyGrid(SortedList<string, CopyDiagnostic> rows)
-        {
-            var table = new Table()
-                .Expand()
-                .Border(TableBorder.Horizontal)
-                .AddColumn("Container")
-                .AddColumn("Progress (%)")
-                ;
-
-            var any = false;
-            foreach (var (container, diag) in rows)
-            {
-                any = true;
-                
-                table.AddRow(container, diag switch 
-                {
-                    CopyDiagnosticMessage(_, var message, var warning) => warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message),
-                    CopyDiagnosticProgress(_, var p, var total) => $"{(float)p/total:p0} ({p}/{total})",
-                    CopyDiagnosticDone => $"[green]Done[/]",
-                    CopyDiagnosticFailed(_, var e) => e switch
-                    {
-                        TaskCanceledException => "[yellow]Cancelled[/]",
-                        _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
-                    },
-                    _ => ""
-                });
-            }
-
-            if (!any)
-                table.AddRow("Starting...");
-
-            if (!System.Diagnostics.Debugger.IsAttached)
-                AnsiConsole.Console.Clear(false);
-
             AnsiConsole.Render(
                 new FigletText("AzTableCopy")
                     .LeftAligned()
                     .Color(Color.Blue));
 
-            AnsiConsole.Render(table);
+            await AnsiConsole
+                .Progress()
+                .Columns(new ProgressColumn[]
+                {
+                    new TaskDescriptionColumn(),
+                    new ProgressBarColumn(),
+                    new PercentageColumn(),
+                    new RemainingTimeColumn(),
+                })
+                .StartAsync(async ctx =>
+                {
+                    var tasks = new SortedDictionary<string, ProgressTask>();
+
+                    await foreach (var diag in CopyAsync(options, cancellationToken))
+                    {
+                        if (!tasks.TryGetValue(diag.container, out var task))
+                            tasks.Add(diag.container, task = ctx.AddTask(diag.container, new () { MaxValue = 1 }));
+
+                        switch (diag)
+                        {
+                            case CopyDiagnosticProgress(var container, int progress, int total):
+                                var lastAmount = task.Value * total;
+                                task.Increment((progress - lastAmount) / total);
+                                break;
+
+                            case CopyDiagnosticMessage(var container, var message, var warning):
+                                AnsiConsole.MarkupLine(
+                                    $"{container} - " + 
+                                    (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
+                                );
+                                break;
+
+                            case CopyDiagnosticDone(var container):
+                                task.Increment(1);
+                                task.StopTask();
+
+                                AnsiConsole.MarkupLine(
+                                    $"{container} - " +
+                                    $"[green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
+                                );
+                                break;
+
+                            case CopyDiagnosticFailed(var container, var error):
+                                break;
+                        }
+                    }
+                });
+
+            return true;
+        }
+        catch (Exception error)
+        {
+            AnsiConsole.WriteException(error);
+            return false;
         }
     }
 
