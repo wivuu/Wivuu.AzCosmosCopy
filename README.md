@@ -23,14 +23,12 @@ Command line
 ```
 Options:
   -s, --source <source>                                  Source connection string (required)
-  --sd, --source-database <source-database>              Source database name (required)    
-  -d, --destination <destination>                        Destination connection string      
+  --sd, --source-database <source-database>              Source database name (required)
+  -d, --destination <destination>                        Destination connection string
   --dd, --destination-database <destination-database>    Destination database name
   -m, --minimal                                          Output minimal information
+  --parallel-containers, --pc <parallel-containers>      Parallel container copies
+  --parallel-documents, --pd <parallel-documents>        Parallel document copies
   --version                                              Show version information
-  -?, -h, --help                                         Show help and usage information   
+  -?, -h, --help                                         Show help and usage information
 ```
-
-
-## Coming soon
-- Support for tweaking concurrency parameters to not overwhelm low RU containers

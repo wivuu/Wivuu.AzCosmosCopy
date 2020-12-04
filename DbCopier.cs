@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -211,7 +210,7 @@ public class DbCopier
 
             var buffer = new BufferBlock<ContainerProperties>(new () 
             { 
-                BoundedCapacity   = options.MaxContainerBufferSize, 
+                BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel), 
                 CancellationToken = cancellationToken 
             });
 
@@ -284,7 +283,7 @@ public class DbCopier
 
                     var buffer = new BufferBlock<Document>(new () 
                     { 
-                        BoundedCapacity   = options.MaxDocCopyBufferSize, 
+                        BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel), 
                         CancellationToken = cancellationToken 
                     });
 

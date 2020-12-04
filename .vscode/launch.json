@@ -10,7 +10,14 @@
             "request": "launch",
             "preLaunchTask": "build",
             "program": "${workspaceFolder}/bin/Debug/net5.0/AzCosmosCopy.dll",
-            "args": [],
+            "args": [
+                "-s", "${input:source}",
+                "--sd", "${input:sourcedb}",
+                "-d", "${input:dest} ",
+                "--dd", "${input:destdb}",
+                "--pc", "1",
+                "--pd", "5"
+            ],
             "cwd": "${workspaceFolder}",
             "console": "internalConsole",
             "stopAtEntry": false
@@ -21,5 +28,27 @@
             "request": "attach",
             "processId": "${command:pickProcess}"
         }
+    ],
+    "inputs": [
+        {
+            "id": "source",
+            "description": "Source account connection string",
+            "type": "promptString"
+        },
+        {
+            "id": "sourcedb",
+            "description": "Source account database",
+            "type": "promptString"
+        },
+        {
+            "id": "dest",
+            "description": "Destination account connection string",
+            "type": "promptString"
+        },
+        {
+            "id": "destdb",
+            "description": "Destination account database",
+            "type": "promptString"
+        },
     ]
 }

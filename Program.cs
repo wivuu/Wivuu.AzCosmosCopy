@@ -24,6 +24,14 @@ var root = new RootCommand
 
     new Option(
         new [] { "-m", "--minimal" }, "Output minimal information"
+    ),
+
+    new Option<int?>(
+        new [] { "--pc", "--parallel-containers" }, "Parallel container copies"
+    ),
+    
+    new Option<int?>(
+        new [] { "--pd", "--parallel-documents" }, "Parallel document copies"
     )
 };
 
@@ -57,14 +65,21 @@ root.Handler = CommandHandler.Create(
         };
 
         var sourceClient = new CosmosClient(args.Source, dbOptions);
-        var destClient   = new CosmosClient(args.Destination ?? args.Source, dbOptions);
+
+        var destClient = new CosmosClient(
+            string.IsNullOrWhiteSpace(args.Destination) ? args.Source : args.Destination, 
+            dbOptions);
 
         var copyOptions = new DbCopierOptions(
             sourceClient,
             destClient,
             args.SourceDatabase,
             args.DestinationDatabase ?? args.SourceDatabase
-        );
+        )
+        {
+            MaxContainerParallel = args.ParallelContainers,
+            MaxDocCopyParallel   = args.ParallelDocuments,
+        };
 
         var result = args.Minimal
             ? await DbCopier.CopyMinimal(copyOptions, cancellation.Token)
@@ -89,4 +104,6 @@ class Args
     public string? Destination { get; init; }
     public string? DestinationDatabase { get; init; }
     public bool Minimal { get; set; }
+    public int ParallelContainers { get; set; } = 10;
+    public int ParallelDocuments { get; set; } = 100;
 }

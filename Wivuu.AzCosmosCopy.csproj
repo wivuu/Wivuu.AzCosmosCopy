@@ -12,13 +12,13 @@
     <ToolCommandName>AzCosmosCopy</ToolCommandName>
     <PackageOutputPath>./nupkg</PackageOutputPath>
 
-    <VersionPrefix>0.0.4</VersionPrefix>
+    <VersionPrefix>1.0.0</VersionPrefix>
     <Authors>Erik O'Leary</Authors>
     <Company>Wivuu</Company>
     <Product>Wivuu AzCosmosCopy</Product>
     <Description>Copy cosmos db databases.</Description>
     <ReleaseNotes>
-    - Handle errors and cancellation in tui
+    - Support for tweaking concurrency parameters to not overwhelm low RU containers
     </ReleaseNotes>
     <PackageTags>cosmos;cosmosdb;azure;copy</PackageTags>
     <PackageProjectUrl>https://github.com/wivuu/Wivuu.AzCosmosCopy</PackageProjectUrl>
