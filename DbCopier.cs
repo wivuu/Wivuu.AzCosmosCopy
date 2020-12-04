@@ -88,7 +88,11 @@ public class DbCopier
                     await foreach (var diag in CopyAsync(options, cancellationToken))
                     {
                         if (!tasks.TryGetValue(diag.container, out var task))
-                            tasks.Add(diag.container, task = ctx.AddTask(diag.container, new () { MaxValue = 1 }));
+                        {
+                            var taskName = string.IsNullOrEmpty(diag.container) ? "n/a" : diag.container;
+
+                            tasks.Add(diag.container, task = ctx.AddTask(taskName, new () { MaxValue = 1 }));
+                        }
 
                         switch (diag)
                         {
@@ -114,7 +118,14 @@ public class DbCopier
                                 );
                                 break;
 
-                            case CopyDiagnosticFailed(var container, var error):
+                            case CopyDiagnosticFailed(var container, var e):
+                                task.StopTask();
+                                
+                                AnsiConsole.MarkupLine($"{container} - " + e switch
+                                {
+                                    TaskCanceledException => "[yellow]Cancelled[/]",
+                                    _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
+                                });
                                 break;
                         }
                     }
