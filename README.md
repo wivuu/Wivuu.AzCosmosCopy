@@ -10,6 +10,8 @@ Simple CLI application which copies azure cosmos DB database to same or differen
 
 ## Usage
 
+By default the app will copy up to 10 containers in parallel with 100 documents in parallel per container. These can be tweaked with the `--pc` and `--pd` parameters to match your use-case. For example, if you you have only a few containers with tens of thousands of documents, you may want to increase the number of parallel documents and reduce the number of parallel containers.
+
 Install new
 ```sh
 dotnet tool install -g azcosmoscopy
