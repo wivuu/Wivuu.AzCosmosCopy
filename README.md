@@ -37,3 +37,6 @@ Options:
   --version                                              Show version information
   -?, -h, --help                                         Show help and usage information
 ```
+
+## Future
+- Add support for Bulk Executor API (https://github.com/Azure/azure-cosmosdb-bulkexecutor-dotnet-getting-started). This API does not currently support serverless, so it was not used by default
