@@ -3,6 +3,7 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Threading;
 using Microsoft.Azure.Cosmos;
+using Wivuu.AzCosmosCopy;
 
 var root = new RootCommand
 {
