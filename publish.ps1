@@ -5,7 +5,7 @@ param(
 function publish ($path) {
     $file = Get-ChildItem $path `
         | Sort-Object LastWriteTime `
-        | Select-Object -Last 1
+        | Select-Object -Last 2
 
     Write-Host "Publish $file ..."
 
