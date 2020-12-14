@@ -64,7 +64,7 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Copy with interactive grid
         /// </summary>
-        internal static async Task<bool> CopyWithDetails(DbCopierOptions options, CancellationToken cancellationToken = default)
+        public static async Task<bool> CopyWithDetails(DbCopierOptions options, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -144,7 +144,7 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Copy with minimal output diagnostics
         /// </summary>
-        internal static async Task<bool> CopyMinimal(DbCopierOptions options, CancellationToken cancellationToken = default)
+        public static async Task<bool> CopyMinimal(DbCopierOptions options, CancellationToken cancellationToken = default)
         {
             try
             {
