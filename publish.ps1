@@ -3,17 +3,20 @@ param(
 )
 
 function publish ($path) {
-    $file = Get-ChildItem $path `
+    $files = Get-ChildItem $path `
         | Sort-Object LastWriteTime `
         | Select-Object -Last 2
 
-    Write-Host "Publish $file ..."
+        
+    foreach ($file in $files) {
+        Write-Host "Publish $file ..."
 
-    if ($key) {
-        dotnet nuget push $file --source "nuget" -k $key --skip-duplicate
-    }
-    else {
-        dotnet nuget push $file --source "nuget" --skip-duplicate
+        if ($key) {
+            dotnet nuget push $file --source "nuget" -k $key --skip-duplicate
+        }
+        else {
+            dotnet nuget push $file --source "nuget" --skip-duplicate
+        }
     }
 }
 
