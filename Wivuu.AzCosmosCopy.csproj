@@ -12,11 +12,11 @@
     <ToolCommandName>AzCosmosCopy</ToolCommandName>
     <PackageOutputPath>./nupkg</PackageOutputPath>
 
-    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionPrefix>1.0.1</VersionPrefix>
     <Authors>Erik O'Leary</Authors>
     <Company>Wivuu</Company>
     <Product>Wivuu AzCosmosCopy</Product>
-    <Description>Copy cosmos db databases.</Description>
+    <Description>Tool to copy cosmos db databases.</Description>
     <ReleaseNotes>
     - Disable indexes and then re-enable them once data added
     </ReleaseNotes>
@@ -40,6 +40,19 @@
     <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="1.3.6" />
     <PackageReference Include="Spectre.Console" Version="0.32.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta1.20574.7" />
+  </ItemGroup>
+
+  <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
+    <OutputType>Library</OutputType>
+    <PackAsTool>false</PackAsTool>
+    <ToolCommandName></ToolCommandName>
+    <Description>Library to copy cosmos db databases.</Description>
+    <AssemblyName>Wivuu.AzCosmosCopy</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup Condition=" '$(AsLibrary)' == 'true' ">
+    <PackageReference Remove="System.CommandLine" />
+    <Compile Remove="Program.cs" />
   </ItemGroup>
 
 </Project>

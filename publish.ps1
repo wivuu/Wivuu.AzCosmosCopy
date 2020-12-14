@@ -17,6 +17,7 @@ function publish ($path) {
     }
 }
 
-dotnet pack --configuration Release
+dotnet pack -c Release
+dotnet pack -c Release -p:AsLibrary=true 
 
 publish .\nupkg\*.nupkg
