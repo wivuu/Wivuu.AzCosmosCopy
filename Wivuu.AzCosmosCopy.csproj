@@ -18,7 +18,7 @@
     <Product>Wivuu AzCosmosCopy</Product>
     <Description>Copy cosmos db databases.</Description>
     <ReleaseNotes>
-    - Support for tweaking concurrency parameters to not overwhelm low RU containers
+    - Disable indexes and then re-enable them once data added
     </ReleaseNotes>
     <PackageTags>cosmos;cosmosdb;azure;copy</PackageTags>
     <PackageProjectUrl>https://github.com/wivuu/Wivuu.AzCosmosCopy</PackageProjectUrl>

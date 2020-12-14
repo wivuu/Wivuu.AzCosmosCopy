@@ -102,7 +102,7 @@ public class DbCopier
 
                             case CopyDiagnosticMessage(var container, var message, var warning):
                                 AnsiConsole.MarkupLine(
-                                    $"{container} - " + 
+                                    $"{container} - " +
                                     (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
                                 );
                                 break;
@@ -119,7 +119,7 @@ public class DbCopier
 
                             case CopyDiagnosticFailed(var container, var e):
                                 task.StopTask();
-                                
+
                                 AnsiConsole.MarkupLine($"{container} - " + e switch
                                 {
                                     TaskCanceledException => "[yellow]Cancelled[/]",
@@ -183,15 +183,15 @@ public class DbCopier
     }
 
     public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
-        DbCopierOptions options, 
+        DbCopierOptions options,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var (sourceClient, destClient, sourceDatabase, destinationDatabase) = options;
 
         var channel = Channel.CreateBounded<CopyDiagnostic>(
-            new BoundedChannelOptions(options.UIRenderQueueCapacity) 
-            { 
-                FullMode = BoundedChannelFullMode.DropOldest 
+            new BoundedChannelOptions(options.UIRenderQueueCapacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest
             });
 
         // Execute copy
@@ -208,14 +208,14 @@ public class DbCopier
         {
             var sourceDb = sourceClient.GetDatabase(sourceDatabase);
 
-            var buffer = new BufferBlock<ContainerProperties>(new () 
-            { 
-                BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel), 
-                CancellationToken = cancellationToken 
+            var buffer = new BufferBlock<ContainerProperties>(new ()
+            {
+                BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel),
+                CancellationToken = cancellationToken
             });
 
-            var action = new ActionBlock<ContainerProperties>(CopyContainerFactory(channel), new () 
-            { 
+            var action = new ActionBlock<ContainerProperties>(CopyContainerFactory(channel), new ()
+            {
                 MaxDegreeOfParallelism    = options.MaxContainerParallel,
                 SingleProducerConstrained = true,
                 CancellationToken         = cancellationToken,
@@ -253,9 +253,14 @@ public class DbCopier
                 {
                     buffer.Complete();
 
-                    await action.Completion.ContinueWith(task =>
-                        channel.Complete()
-                    );
+                    try
+                    {
+                        await action.Completion;
+                    }
+                    finally
+                    {
+                        channel.Complete();
+                    }
                 }
             }
         }
@@ -263,11 +268,20 @@ public class DbCopier
         // Pipeline which copies a single container
         Func<ContainerProperties, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (ContainerProperties c) =>
         {
+            // Disable indexing
+            var index = c.IndexingPolicy;
+
+            c.IndexingPolicy = new IndexingPolicy
+            {
+                IndexingMode = IndexingMode.None,
+                Automatic    = false
+            };
+
+            var sourceContainer = sourceClient.GetContainer(sourceDatabase, c.Id);
+            var destContainer   = destClient.GetContainer(destinationDatabase, c.Id);
+
             try
             {
-                var sourceContainer = sourceClient.GetContainer(sourceDatabase, c.Id);
-                var destContainer   = destClient.GetContainer(destinationDatabase, c.Id);
-
                 // Create dest container
                 await destClient.GetDatabase(destinationDatabase).CreateContainerAsync(c);
 
@@ -281,10 +295,10 @@ public class DbCopier
                     var processed = 0;
                     var (firstPart, pkPath) = c.PartitionKeyPath[1..].Replace('/', '.').SplitTwo('.');
 
-                    var buffer = new BufferBlock<Document>(new () 
-                    { 
-                        BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel), 
-                        CancellationToken = cancellationToken 
+                    var buffer = new BufferBlock<Document>(new ()
+                    {
+                        BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
+                        CancellationToken = cancellationToken
                     });
 
                     // Consumer
@@ -307,8 +321,8 @@ public class DbCopier
 
                             messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total));
                         },
-                        new () 
-                        { 
+                        new ()
+                        {
                             MaxDegreeOfParallelism    = options.MaxDocCopyParallel,
                             SingleProducerConstrained = true,
                             CancellationToken         = cancellationToken
@@ -325,7 +339,7 @@ public class DbCopier
                             while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
                             {
                                 using var response = await docFeed.ReadNextAsync();
-                                
+
                                 var all = await JsonSerializer.DeserializeAsync<DocumentContainer>(response.Content);
 
                                 // Post
@@ -351,6 +365,14 @@ public class DbCopier
             {
                 messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
             }
+            finally
+            {
+                // Enable index
+                c.IndexingPolicy = index;
+
+                messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Enabling indexing..."));
+                await destContainer.ReplaceContainerAsync(c);
+            }
         };
     }
 
@@ -369,16 +391,16 @@ public class DbCopier
     {
         [JsonIgnore, JsonPropertyName("_rid")]
         public string? Rid { get; set; }
-        
+
         [JsonIgnore, JsonPropertyName("_self")]
         public string? Self { get; set; }
 
         [JsonIgnore, JsonPropertyName("_etag")]
         public int? ETag { get; set; }
-        
+
         [JsonIgnore, JsonPropertyName("_attachments")]
         public string? Attachments { get; set; }
-        
+
         [JsonIgnore, JsonPropertyName("_ts")]
         public int? Ts { get; set; }
 
@@ -397,7 +419,7 @@ public class DbCopier
                 else
                     return GetPK(jsonToken);
             }
-    
+
             return PartitionKey.None;
 
             static PartitionKey GetPK(JsonElement jsonToken)
