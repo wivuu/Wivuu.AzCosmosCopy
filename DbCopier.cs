@@ -367,7 +367,7 @@ namespace Wivuu.AzCosmosCopy
                                 stream.Seek(0, SeekOrigin.Begin);
 
                                 var pk   = item.GetPartitionKey(firstPart, pkPath);
-                                var resp = await destContainer.UpsertItemStreamAsync(stream, pk);
+                                var resp = await destContainer.CreateItemStreamAsync(stream, pk);
 
                                 resp.EnsureSuccessStatusCode();
 
