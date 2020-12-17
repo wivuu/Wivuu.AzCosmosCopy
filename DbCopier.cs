@@ -184,11 +184,73 @@ namespace Wivuu.AzCosmosCopy
             }
         }
 
+        /// <summary>
+        /// Copy from input source to destination
+        /// </summary>
+        public static IAsyncEnumerable<CopyDiagnostic> CopyAsync(
+            DbCopierOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            var (sourceClient, _, sourceDatabase, _) = options;
+            var sourceDb = sourceClient.GetDatabase(sourceDatabase);
+
+            return CopyAsync(GetSourceContainers(sourceDb, cancellationToken), options, cancellationToken);
+        }
+
+        /// <summary>
+        /// Retrieve all containers from the input database
+        /// </summary>
+        public static async IAsyncEnumerable<CopyContainerInfo> GetSourceContainers(Database sourceDb, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // Gather list of containers to copy
+            using var feed = sourceDb.GetContainerQueryIterator<ContainerProperties>();
+
+            while (feed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            {
+                foreach (var properties in await feed.ReadNextAsync())
+                {
+                    var sourceContainer = sourceDb.GetContainer(properties.Id);
+                    var total = await sourceContainer.GetItemLinqQueryable<object>(true).CountAsync();
+                            
+                    yield return new CopyContainerInfo(
+                        Properties: properties,
+                        DocumentProducer: GetDocuments(sourceContainer, cancellationToken),
+                        NumMessages: total
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Retrieve all documents from the input container
+        /// </summary>
+        public static async IAsyncEnumerable<Document> GetDocuments(Container container, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // Retrieve all documents
+            using var docFeed = container.GetItemQueryStreamIterator();
+
+            // Producer
+            while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            {
+                using var response = await docFeed.ReadNextAsync();
+
+                var all = await JsonSerializer.DeserializeAsync<DocumentContainer>(response.Content);
+
+                // Post
+                for (var i = 0; i < all!.Documents.Count; ++i)
+                    yield return all.Documents[i];
+            }
+        }
+
+        /// <summary>
+        /// Copy from input containers to destination
+        /// </summary>
         public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
+            IAsyncEnumerable<CopyContainerInfo> allContainers,
             DbCopierOptions options,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            var (sourceClient, destClient, sourceDatabase, destinationDatabase) = options;
+            var (_, destClient, sourceDatabase, destinationDatabase) = options;
 
             var channel = Channel.CreateBounded<CopyDiagnostic>(
                 new BoundedChannelOptions(options.UIRenderQueueCapacity)
@@ -208,15 +270,13 @@ namespace Wivuu.AzCosmosCopy
             // Pipeline which copies all containers
             async Task CopyDataPipeline(ChannelWriter<CopyDiagnostic> channel)
             {
-                var sourceDb = sourceClient.GetDatabase(sourceDatabase);
-
-                var buffer = new BufferBlock<ContainerProperties>(new ()
+                var buffer = new BufferBlock<CopyContainerInfo>(new ()
                 {
                     BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel),
                     CancellationToken = cancellationToken
                 });
 
-                var action = new ActionBlock<ContainerProperties>(CopyContainerFactory(channel), new ()
+                var action = new ActionBlock<CopyContainerInfo>(CopyContainerFactory(channel), new ()
                 {
                     MaxDegreeOfParallelism    = options.MaxContainerParallel,
                     SingleProducerConstrained = true,
@@ -237,18 +297,12 @@ namespace Wivuu.AzCosmosCopy
                             return;
                         }
 
-                        // Gather list of containers to copy
-                        using var feed = sourceDb.GetContainerQueryIterator<ContainerProperties>();
-
-                        while (feed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+                        await foreach (var c in allContainers)
                         {
-                            foreach (var c in await feed.ReadNextAsync())
-                            {
-                                channel.TryWrite(new CopyDiagnosticMessage(c.Id, "Queued..."));
+                            channel.TryWrite(new CopyDiagnosticMessage(c.Properties.Id, "Queued..."));
 
-                                while (!buffer.Post(c))
-                                    await Task.Yield();
-                            }
+                            while (!buffer.Post(c))
+                                await Task.Yield();
                         }
                     }
                     finally
@@ -268,8 +322,10 @@ namespace Wivuu.AzCosmosCopy
             }
 
             // Pipeline which copies a single container
-            Func<ContainerProperties, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (ContainerProperties c) =>
+            Func<CopyContainerInfo, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (CopyContainerInfo info) =>
             {
+                var (c, allDocs, total) = info;
+
                 // Disable indexing
                 var index = c.IndexingPolicy;
 
@@ -279,8 +335,7 @@ namespace Wivuu.AzCosmosCopy
                     Automatic    = false
                 };
 
-                var sourceContainer = sourceClient.GetContainer(sourceDatabase, c.Id);
-                var destContainer   = destClient.GetContainer(destinationDatabase, c.Id);
+                var destContainer = destClient.GetContainer(destinationDatabase, c.Id);
 
                 try
                 {
@@ -289,10 +344,7 @@ namespace Wivuu.AzCosmosCopy
 
                     messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
 
-                    // Getting number of documents
-                    var total = await sourceContainer.GetItemLinqQueryable<object>(true).CountAsync();
-
-                    if (total > 0)
+                    if (total == null || total > 0)
                     {
                         var processed = 0;
                         var (firstPart, pkPath) = c.PartitionKeyPath[1..].Replace('/', '.').SplitTwo('.');
@@ -315,13 +367,13 @@ namespace Wivuu.AzCosmosCopy
                                 stream.Seek(0, SeekOrigin.Begin);
 
                                 var pk   = item.GetPartitionKey(firstPart, pkPath);
-                                var resp = await destContainer.CreateItemStreamAsync(stream, pk);
+                                var resp = await destContainer.UpsertItemStreamAsync(stream, pk);
 
                                 resp.EnsureSuccessStatusCode();
 
                                 var progress = Interlocked.Increment(ref processed);
 
-                                messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total));
+                                messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
                             },
                             new ()
                             {
@@ -334,22 +386,11 @@ namespace Wivuu.AzCosmosCopy
                         {
                             try
                             {
-                                // Retrieve all documents
-                                using var docFeed = sourceContainer.GetItemQueryStreamIterator();
-
-                                // Producer
-                                while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+                                // Retrieve all documents from producer
+                                await foreach (var doc in allDocs)
                                 {
-                                    using var response = await docFeed.ReadNextAsync();
-
-                                    var all = await JsonSerializer.DeserializeAsync<DocumentContainer>(response.Content);
-
-                                    // Post
-                                    for (var i = 0; i < all!.Documents.Count; ++i)
-                                    {
-                                        while (!buffer.Post(all.Documents[i]))
-                                            await Task.Yield();
-                                    }
+                                    while (!buffer.Post(doc))
+                                        await Task.Yield();
                                 }
                             }
                             finally
@@ -379,9 +420,18 @@ namespace Wivuu.AzCosmosCopy
         }
 
         /// <summary>
+        /// Class which informs copier pipeline what data to copy
+        /// </summary>
+        public record CopyContainerInfo(
+            ContainerProperties Properties,
+            IAsyncEnumerable<Document> DocumentProducer,
+            int? NumMessages = null
+        );
+
+        /// <summary>
         /// Document response container
         /// </summary>
-        class DocumentContainer
+        public class DocumentContainer
         {
             public List<Document> Documents { get; set; } = default!;
         }
@@ -389,24 +439,30 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Single document in response
         /// </summary>
-        class Document
+        public class Document
         {
             [JsonIgnore, JsonPropertyName("_rid")]
+            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_rid")]
             public string? Rid { get; set; }
 
             [JsonIgnore, JsonPropertyName("_self")]
+            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_self")]
             public string? Self { get; set; }
 
             [JsonIgnore, JsonPropertyName("_etag")]
+            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_etag")]
             public int? ETag { get; set; }
 
             [JsonIgnore, JsonPropertyName("_attachments")]
+            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_attachments")]
             public string? Attachments { get; set; }
 
             [JsonIgnore, JsonPropertyName("_ts")]
+            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_ts")]
             public int? Ts { get; set; }
 
             [JsonExtensionData]
+            [Newtonsoft.Json.JsonExtensionData]
             public Dictionary<string, JsonElement> Properties { get; set; } = default!;
 
             public PartitionKey GetPartitionKey(string firstPart, string? pkPath)
