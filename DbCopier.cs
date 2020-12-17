@@ -55,6 +55,11 @@ namespace Wivuu.AzCosmosCopy
         public int MaxDocCopyParallel { get; init; } = 100;
 
         /// <summary>
+        /// Execute N bulk copy operations per container
+        /// </summary>
+        public int MaxBulkCopyParallel { get; init; } = 10;
+
+        /// <summary>
         /// Enqueue N documents per container copy operation
         /// </summary>
         public int MaxDocCopyBufferSize { get; init; } = 100;
@@ -438,10 +443,7 @@ namespace Wivuu.AzCosmosCopy
                             {
                                 // Retrieve all documents from producer
                                 await foreach (var doc in allDocs)
-                                {
-                                    while (!buffer.Post(doc))
-                                        await Task.Yield();
-                                }
+                                    await buffer.SendAsync(doc, cancellationToken);
                             }
                             finally
                             {
@@ -544,36 +546,32 @@ namespace Wivuu.AzCosmosCopy
                             new ()
                             {
                                 CancellationToken = cancellationToken,
-                                // Greedy = true,
+                                Greedy = true,
                             });
 
                         var consumer = new ActionBlock<string[]>(
                             async items =>
                             {
                                 BulkImportResponse response;
-                                try
-                                {
-                                    response = await bulkExecutor.BulkImportAsync(
-                                        documents: items,
-                                        enableUpsert: true,//false,
-                                        disableAutomaticIdGeneration: true,
-                                        maxConcurrencyPerPartitionKeyRange: null,
-                                        maxInMemorySortingBatchSize: null,
-                                        cancellationToken: cancellationToken
-                                    );
 
-                                    var progress = Interlocked.Add(ref processed, (int)response.NumberOfDocumentsImported);
-                                    messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
-                                }
-                                catch
-                                {
-                                    throw;
-                                }
+                                response = await bulkExecutor.BulkImportAsync(
+                                    documents: items,
+                                    enableUpsert: true,//false,
+                                    disableAutomaticIdGeneration: true,
+                                    maxConcurrencyPerPartitionKeyRange: null,
+                                    maxInMemorySortingBatchSize: null,
+                                    cancellationToken: cancellationToken
+                                );
+
+                                var progress = Interlocked.Add(ref processed, (int)response.NumberOfDocumentsImported);
+                                messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
+
+                                // TODO: Handle other scenarios?
                                 // while (response.NumberOfDocumentsImported < items.Length);
                             },
                             new ()
                             {
-                                MaxDegreeOfParallelism    = 10,//options.MaxDocCopyParallel,
+                                MaxDegreeOfParallelism    = options.MaxBulkCopyParallel,
                                 SingleProducerConstrained = true,
                                 CancellationToken         = cancellationToken
                             });
@@ -586,10 +584,7 @@ namespace Wivuu.AzCosmosCopy
                             {
                                 // Retrieve all documents from producer
                                 await foreach (var doc in allDocs)
-                                {
-                                    while (!buffer.Post(doc))
-                                        await Task.Yield();
-                                }
+                                    await buffer.SendAsync(doc, cancellationToken);
                             }
                             finally
                             {
