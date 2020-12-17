@@ -33,7 +33,9 @@ var root = new RootCommand
     
     new Option<int?>(
         new [] { "--pd", "--parallel-documents" }, "Parallel document copies"
-    )
+    ),
+
+    new Option(new [] { "-b", "--use-bulk" }, "Use bulk executor (serverless not supported)")
 };
 
 // Add validators
@@ -57,29 +59,16 @@ root.Handler = CommandHandler.Create(
         if (args.Destination is null && args.DestinationDatabase == args.SourceDatabase)
             throw new System.Exception("--destination cannot be copied to --source with the same --destination-database name");
 
-        var dbOptions = new CosmosClientOptions
-        {
-            ConnectionMode                        = ConnectionMode.Direct,
-            AllowBulkExecution                    = true,
-            MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromMinutes(5),
-            MaxRetryAttemptsOnRateLimitedRequests = 60,
-        };
-
-        var sourceClient = new CosmosClient(args.Source, dbOptions);
-
-        var destClient = new CosmosClient(
-            string.IsNullOrWhiteSpace(args.Destination) ? args.Source : args.Destination, 
-            dbOptions);
-
         var copyOptions = new DbCopierOptions(
-            sourceClient,
-            destClient,
+            args.Source,
+            string.IsNullOrWhiteSpace(args.Destination) ? args.Source : args.Destination,
             args.SourceDatabase,
             args.DestinationDatabase ?? args.SourceDatabase
         )
         {
             MaxContainerParallel = args.ParallelContainers,
             MaxDocCopyParallel   = args.ParallelDocuments,
+            UseBulk              = args.UseBulk,
         };
 
         var result = args.Minimal
@@ -107,4 +96,5 @@ class Args
     public bool Minimal { get; set; }
     public int ParallelContainers { get; set; } = 10;
     public int ParallelDocuments { get; set; } = 100;
+    public bool UseBulk { get; set; }
 }

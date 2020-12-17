@@ -5,12 +5,15 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using System.Threading.Channels;
 using System.Threading;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Linq;
+using Microsoft.Azure.CosmosDB.BulkExecutor;
+using Microsoft.Azure.CosmosDB.BulkExecutor.BulkImport;
 using Microsoft.IO;
 using Spectre.Console;
 using BlushingPenguin.JsonPath;
@@ -19,12 +22,23 @@ namespace Wivuu.AzCosmosCopy
 {
     public record DbCopierOptions
     (
-        CosmosClient SourceClient,
-        CosmosClient DestClient,
+        string Source,
+        string Destination,
         string SourceDatabase,
         string DestinationDatabase
     )
     {
+        /// <summary>
+        /// Cosmost client options
+        /// </summary>
+        public CosmosClientOptions ClientOptions { get; init; } = new CosmosClientOptions
+        {
+            ConnectionMode                        = ConnectionMode.Direct,
+            AllowBulkExecution                    = true,
+            MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromMinutes(5),
+            MaxRetryAttemptsOnRateLimitedRequests = 60,
+        };
+
         /// <summary>
         /// Execute N container copies in parallel
         /// </summary>
@@ -49,6 +63,28 @@ namespace Wivuu.AzCosmosCopy
         /// Enqueue N table display render updates (affects rendering only)
         /// </summary>
         public int UIRenderQueueCapacity { get; init; } = 1000;
+
+        /// <summary>
+        /// Whether or not to use bulk executor (serverless not supported)
+        /// </summary>
+        public bool UseBulk { get; set; }
+        
+        /// <summary>
+        /// Throughput for newly created collections
+        /// </summary>
+        public int? DestinationThroughput { get; set; }
+
+        internal (Uri uri, string key) GetDestinationComponents()
+        {
+            var pattern = new Regex(@"AccountEndpoint=(?<uri>[^;]+);AccountKey=(?<key>[^;]+)");
+
+            if (pattern.Match(Destination) is var match && match.Success)
+            {
+                return (new Uri(match.Groups["uri"].Value), match.Groups["key"].Value);
+            }
+
+            throw new Exception("Unable to parse input destination connection string");
+        }
     }
 
     public class DbCopier
@@ -191,8 +227,8 @@ namespace Wivuu.AzCosmosCopy
             DbCopierOptions options,
             CancellationToken cancellationToken = default)
         {
-            var (sourceClient, _, sourceDatabase, _) = options;
-            var sourceDb = sourceClient.GetDatabase(sourceDatabase);
+            var sourceClient = new CosmosClient(options.Source, options.ClientOptions);
+            var sourceDb     = sourceClient.GetDatabase(options.SourceDatabase);
 
             return CopyAsync(GetSourceContainers(sourceDb, cancellationToken), options, cancellationToken);
         }
@@ -250,7 +286,8 @@ namespace Wivuu.AzCosmosCopy
             DbCopierOptions options,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            var (_, destClient, sourceDatabase, destinationDatabase) = options;
+            var (_, dest, sourceDatabase, destinationDatabase) = options;
+            var destClient = new CosmosClient(dest, options.ClientOptions);
 
             var channel = Channel.CreateBounded<CopyDiagnostic>(
                 new BoundedChannelOptions(options.UIRenderQueueCapacity)
@@ -276,12 +313,16 @@ namespace Wivuu.AzCosmosCopy
                     CancellationToken = cancellationToken
                 });
 
-                var action = new ActionBlock<CopyContainerInfo>(CopyContainerFactory(channel), new ()
-                {
-                    MaxDegreeOfParallelism    = options.MaxContainerParallel,
-                    SingleProducerConstrained = true,
-                    CancellationToken         = cancellationToken,
-                });
+                var action = new ActionBlock<CopyContainerInfo>(
+                    options.UseBulk
+                        ? CopyBulkFactory(channel)
+                        : CopyStandardFactory(channel), 
+                    new ()
+                    {
+                        MaxDegreeOfParallelism    = options.MaxContainerParallel,
+                        SingleProducerConstrained = true,
+                        CancellationToken         = cancellationToken,
+                    });
 
                 using (buffer.LinkTo(action, new() { PropagateCompletion = true }))
                 {
@@ -294,7 +335,7 @@ namespace Wivuu.AzCosmosCopy
                         catch (CosmosException)
                         {
                             channel.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
-                            return;
+                            // return;
                         }
 
                         await foreach (var c in allContainers)
@@ -321,8 +362,8 @@ namespace Wivuu.AzCosmosCopy
                 }
             }
 
-            // Pipeline which copies a single container
-            Func<CopyContainerInfo, Task> CopyContainerFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (CopyContainerInfo info) =>
+            // Pipeline which copies a single container using the standard Cosmos API
+            Func<CopyContainerInfo, Task> CopyStandardFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (CopyContainerInfo info) =>
             {
                 var (c, allDocs, total) = info;
 
@@ -339,8 +380,17 @@ namespace Wivuu.AzCosmosCopy
 
                 try
                 {
+                    // Setup throughput
+                    var throughput = options.DestinationThroughput is not null
+                        ? ThroughputProperties.CreateAutoscaleThroughput(options.DestinationThroughput switch
+                          {
+                              < 4000 => 4000,
+                              var v => v.Value
+                          })
+                        : null;
+
                     // Create dest container
-                    await destClient.GetDatabase(destinationDatabase).CreateContainerAsync(c);
+                    await destClient.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput);
 
                     messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
 
@@ -367,7 +417,7 @@ namespace Wivuu.AzCosmosCopy
                                 stream.Seek(0, SeekOrigin.Begin);
 
                                 var pk   = item.GetPartitionKey(firstPart, pkPath);
-                                var resp = await destContainer.CreateItemStreamAsync(stream, pk);
+                                var resp = await destContainer.UpsertItemStreamAsync(stream, pk);
 
                                 resp.EnsureSuccessStatusCode();
 
@@ -383,6 +433,154 @@ namespace Wivuu.AzCosmosCopy
                             });
 
                         using (buffer.LinkTo(consumer, new() { PropagateCompletion = true }))
+                        {
+                            try
+                            {
+                                // Retrieve all documents from producer
+                                await foreach (var doc in allDocs)
+                                {
+                                    while (!buffer.Post(doc))
+                                        await Task.Yield();
+                                }
+                            }
+                            finally
+                            {
+                                buffer.Complete();
+
+                                await consumer.Completion;
+                            }
+                        }
+                    }
+
+                    messageChannel.TryWrite(new CopyDiagnosticDone(c.Id));
+                }
+                catch (Exception e)
+                {
+                    messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
+                }
+                finally
+                {
+                    // Enable index
+                    c.IndexingPolicy = index;
+
+                    messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Enabling indexing..."));
+                    await destContainer.ReplaceContainerAsync(c);
+                }
+            };
+        
+            // Pipeline which copies a single container using the Bulk Cosmos API
+            Func<CopyContainerInfo, Task> CopyBulkFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (CopyContainerInfo info) =>
+            {
+                var (c, allDocs, total) = info;
+
+                // Disable indexing
+                var index = c.IndexingPolicy;
+
+                c.IndexingPolicy = new IndexingPolicy
+                {
+                    IndexingMode = IndexingMode.None,
+                    Automatic    = false
+                };
+
+                var destContainer = destClient.GetContainer(destinationDatabase, c.Id);
+
+                try
+                {
+                    // Setup throughput
+                    var throughput = ThroughputProperties.CreateAutoscaleThroughput(options.DestinationThroughput switch
+                    {
+                        null => 4000,
+                        < 4000 => 4000,
+                        int v => v
+                    });
+
+                    // Create dest container
+                    await destClient.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput);
+
+                    var (uri, key) = options.GetDestinationComponents();
+                    var policy = new Microsoft.Azure.Documents.Client.ConnectionPolicy
+                    {
+                        ConnectionMode = options.ClientOptions.ConnectionMode == ConnectionMode.Direct 
+                            ? Microsoft.Azure.Documents.Client.ConnectionMode.Direct 
+                            : Microsoft.Azure.Documents.Client.ConnectionMode.Gateway,
+                        ConnectionProtocol = options.ClientOptions.ConnectionMode == ConnectionMode.Direct 
+                            ? Microsoft.Azure.Documents.Client.Protocol.Tcp
+                            : Microsoft.Azure.Documents.Client.Protocol.Https,
+                    };
+
+                    using var destDocClient = new Microsoft.Azure.Documents.Client.DocumentClient(uri, key, policy);
+                    var destCollection = await destDocClient.ReadDocumentCollectionAsync(
+                        Microsoft.Azure.Documents.Client.UriFactory.CreateDocumentCollectionUri(destinationDatabase, c.Id));
+
+                    messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
+
+                    if (total == null || total > 0)
+                    {
+                        var processed = 0;
+                        var (firstPart, pkPath) = c.PartitionKeyPath[1..].Replace('/', '.').SplitTwo('.');
+                        
+                        // Create bulk executor
+                        var bulkExecutor = new BulkExecutor(destDocClient, destCollection);
+                        await bulkExecutor.InitializeAsync();
+
+                        // Consumer pipeline
+                        var buffer = new BufferBlock<Document>(new ()
+                        {
+                            BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
+                            CancellationToken = cancellationToken
+                        });
+
+                        var serializer = new TransformBlock<Document, string>(
+                            data => JsonSerializer.Serialize(data),
+                            new ()
+                            {
+                                SingleProducerConstrained = true,
+                                CancellationToken = cancellationToken,
+                            }
+                        );
+
+                        var batch = new BatchBlock<string>(
+                            options.MaxDocCopyParallel,
+                            new ()
+                            {
+                                CancellationToken = cancellationToken,
+                                // Greedy = true,
+                            });
+
+                        var consumer = new ActionBlock<string[]>(
+                            async items =>
+                            {
+                                BulkImportResponse response;
+                                try
+                                {
+                                    response = await bulkExecutor.BulkImportAsync(
+                                        documents: items,
+                                        enableUpsert: true,//false,
+                                        disableAutomaticIdGeneration: true,
+                                        maxConcurrencyPerPartitionKeyRange: null,
+                                        maxInMemorySortingBatchSize: null,
+                                        cancellationToken: cancellationToken
+                                    );
+
+                                    var progress = Interlocked.Add(ref processed, (int)response.NumberOfDocumentsImported);
+                                    messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
+                                }
+                                catch
+                                {
+                                    throw;
+                                }
+                                // while (response.NumberOfDocumentsImported < items.Length);
+                            },
+                            new ()
+                            {
+                                MaxDegreeOfParallelism    = 10,//options.MaxDocCopyParallel,
+                                SingleProducerConstrained = true,
+                                CancellationToken         = cancellationToken
+                            });
+
+                        using (buffer.LinkTo(serializer, new () { PropagateCompletion = true }))
+                        using (serializer.LinkTo(batch, new () { PropagateCompletion = true }))
+                        using (batch.LinkTo(consumer, new() { PropagateCompletion = true }))
                         {
                             try
                             {
