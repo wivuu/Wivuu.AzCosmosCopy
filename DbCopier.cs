@@ -75,9 +75,14 @@ namespace Wivuu.AzCosmosCopy
         public bool UseBulk { get; set; }
         
         /// <summary>
-        /// Throughput for newly created collections
+        /// Throughput for newly created containers
         /// </summary>
-        public int? DestinationThroughput { get; set; }
+        public int? DestinationContainerThroughput { get; set; }
+
+        /// <summary>
+        /// Throughput for newly created databases
+        /// </summary>
+        public int? DestinationDbThroughput { get; set; }
 
         internal (Uri uri, string key) GetDestinationComponents()
         {
@@ -335,7 +340,15 @@ namespace Wivuu.AzCosmosCopy
                     {
                         try
                         {
-                            await destClient.CreateDatabaseAsync(destinationDatabase);
+                            var throughput = options.DestinationDbThroughput.HasValue
+                                ? ThroughputProperties.CreateAutoscaleThroughput(options.DestinationDbThroughput.Value switch
+                                {
+                                    < 4000 => 4000,
+                                    var n => n
+                                })
+                                : null;
+
+                            await destClient.CreateDatabaseAsync(destinationDatabase, throughput);
                         }
                         catch (CosmosException)
                         {
@@ -373,30 +386,10 @@ namespace Wivuu.AzCosmosCopy
                 var (c, allDocs, total) = info;
 
                 // Disable indexing
-                var index = c.IndexingPolicy;
-
-                c.IndexingPolicy = new IndexingPolicy
-                {
-                    IndexingMode = IndexingMode.None,
-                    Automatic    = false
-                };
-
-                var destContainer = destClient.GetContainer(destinationDatabase, c.Id);
-
+                await using var containerScale = await CreateScaledContainer(c);
+                
                 try
                 {
-                    // Setup throughput
-                    var throughput = options.DestinationThroughput is not null
-                        ? ThroughputProperties.CreateAutoscaleThroughput(options.DestinationThroughput switch
-                          {
-                              < 4000 => 4000,
-                              var v => v.Value
-                          })
-                        : null;
-
-                    // Create dest container
-                    await destClient.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput);
-
                     messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
 
                     if (total == null || total > 0)
@@ -422,7 +415,7 @@ namespace Wivuu.AzCosmosCopy
                                 stream.Seek(0, SeekOrigin.Begin);
 
                                 var pk   = item.GetPartitionKey(firstPart, pkPath);
-                                var resp = await destContainer.UpsertItemStreamAsync(stream, pk);
+                                var resp = await containerScale.Container.UpsertItemStreamAsync(stream, pk);
 
                                 resp.EnsureSuccessStatusCode();
 
@@ -460,14 +453,6 @@ namespace Wivuu.AzCosmosCopy
                 {
                     messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
                 }
-                finally
-                {
-                    // Enable index
-                    c.IndexingPolicy = index;
-
-                    messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Enabling indexing..."));
-                    await destContainer.ReplaceContainerAsync(c);
-                }
             };
         
             // Pipeline which copies a single container using the Bulk Cosmos API
@@ -475,30 +460,10 @@ namespace Wivuu.AzCosmosCopy
             {
                 var (c, allDocs, total) = info;
 
-                // Disable indexing
-                var index = c.IndexingPolicy;
-
-                c.IndexingPolicy = new IndexingPolicy
-                {
-                    IndexingMode = IndexingMode.None,
-                    Automatic    = false
-                };
-
-                var destContainer = destClient.GetContainer(destinationDatabase, c.Id);
+                await using var containerScale = await CreateScaledContainer(c);
 
                 try
                 {
-                    // Setup throughput
-                    var throughput = ThroughputProperties.CreateAutoscaleThroughput(options.DestinationThroughput switch
-                    {
-                        null => 4000,
-                        < 4000 => 4000,
-                        int v => v
-                    });
-
-                    // Create dest container
-                    await destClient.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput);
-
                     var (uri, key) = options.GetDestinationComponents();
                     var policy = new Microsoft.Azure.Documents.Client.ConnectionPolicy
                     {
@@ -519,7 +484,6 @@ namespace Wivuu.AzCosmosCopy
                     if (total == null || total > 0)
                     {
                         var processed = 0;
-                        var (firstPart, pkPath) = c.PartitionKeyPath[1..].Replace('/', '.').SplitTwo('.');
                         
                         // Create bulk executor
                         var bulkExecutor = new BulkExecutor(destDocClient, destCollection);
@@ -601,15 +565,49 @@ namespace Wivuu.AzCosmosCopy
                 {
                     messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
                 }
-                finally
-                {
-                    // Enable index
-                    c.IndexingPolicy = index;
-
-                    messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Enabling indexing..."));
-                    await destContainer.ReplaceContainerAsync(c);
-                }
             };
+
+            // Ensure container exists
+            async Task<CreateScaled> CreateScaledContainer(ContainerProperties c)
+            {
+                // Disable indexing
+                var index = c.IndexingPolicy;
+
+                c.IndexingPolicy = new IndexingPolicy
+                {
+                    IndexingMode = IndexingMode.None,
+                    Automatic    = false
+                };
+
+                // Setup throughput
+                var throughput = options.DestinationContainerThroughput.HasValue
+                    ? ThroughputProperties.CreateAutoscaleThroughput(options.DestinationContainerThroughput.Value switch
+                    {
+                        < 4000 => 4000,
+                        int v => v
+                    })
+                    : null;
+
+                // Create dest container
+                await destClient!.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput);
+
+                var container = destClient.GetContainer(destinationDatabase, c.Id);
+
+                return new(
+                    container,
+                    Completion: async () => {
+                        // Enable index
+                        c.IndexingPolicy = index;
+
+                        await container.ReplaceContainerAsync(c);
+                    }
+                );
+            }
+        }
+
+        record CreateScaled(Container Container, Func<Task> Completion) : System.IAsyncDisposable
+        {
+            public async ValueTask DisposeAsync() => await Completion();
         }
 
         /// <summary>

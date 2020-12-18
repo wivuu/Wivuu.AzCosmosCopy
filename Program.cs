@@ -35,7 +35,15 @@ var root = new RootCommand
         new [] { "--pd", "--parallel-documents" }, "Parallel document copies"
     ),
 
-    new Option(new [] { "-b", "--use-bulk" }, "Use bulk executor (serverless not supported)")
+    new Option(new [] { "-b", "--bulk" }, "Use bulk executor (serverless not supported)"),
+
+    new Option<int?>(
+        new [] { "--dbscale" }, "Destination database scale (serverless not supported)"
+    ),
+    
+    new Option<int?>(
+        new [] { "--dcscale" }, "Destination container scale (serverless not supported)"
+    ),
 };
 
 // Add validators
@@ -66,9 +74,11 @@ root.Handler = CommandHandler.Create(
             args.DestinationDatabase ?? args.SourceDatabase
         )
         {
-            MaxContainerParallel = args.ParallelContainers,
-            MaxDocCopyParallel   = args.ParallelDocuments,
-            UseBulk              = args.UseBulk,
+            MaxContainerParallel           = args.ParallelContainers,
+            MaxDocCopyParallel             = args.ParallelDocuments,
+            UseBulk                        = args.Bulk,
+            DestinationContainerThroughput = args.DcScale,
+            DestinationDbThroughput        = args.DbScale,
         };
 
         var result = args.Minimal
@@ -96,5 +106,7 @@ class Args
     public bool Minimal { get; set; }
     public int ParallelContainers { get; set; } = 10;
     public int ParallelDocuments { get; set; } = 100;
-    public bool UseBulk { get; set; }
+    public bool Bulk { get; set; }
+    public int? DbScale { get; set; }
+    public int? DcScale { get; set; }
 }
