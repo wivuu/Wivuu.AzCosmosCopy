@@ -13,7 +13,7 @@
     <PackageOutputPath>./nupkg</PackageOutputPath>
     <ServerGarbageCollection>true</ServerGarbageCollection>
 
-    <VersionPrefix>1.0.4</VersionPrefix>
+    <VersionPrefix>1.0.5</VersionPrefix>
     <Authors>Erik O'Leary</Authors>
     <Company>Wivuu</Company>
     <Product>Wivuu AzCosmosCopy</Product>

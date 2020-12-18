@@ -7,7 +7,6 @@ function publish ($path) {
         | Sort-Object LastWriteTime `
         | Select-Object -Last 2
 
-        
     foreach ($file in $files) {
         Write-Host "Publish $file ..."
 
