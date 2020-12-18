@@ -76,7 +76,8 @@ root.Handler = CommandHandler.Create(
             DestinationDbThroughput        = args.DbScale,
         };
 
-        var result = await DbCopier.CopyWithDetails(copyOptions, cancellation.Token);
+        var activity = DbCopier.CopyAsync(copyOptions, cancellation.Token);
+        var result   = await DbCopier.RenderCopyDetailsAsync(activity);
 
         return result ? 0 : 1;
     });

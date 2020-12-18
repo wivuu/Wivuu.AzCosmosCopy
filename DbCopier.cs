@@ -1,10 +1,7 @@
 using System;
 using System.Linq;
 using System.Collections.Generic;
-using System.IO;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -14,9 +11,8 @@ using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Linq;
 using Microsoft.Azure.CosmosDB.BulkExecutor;
 using Microsoft.Azure.CosmosDB.BulkExecutor.BulkImport;
-using Microsoft.IO;
 using Spectre.Console;
-using BlushingPenguin.JsonPath;
+using System.IO;
 
 namespace Wivuu.AzCosmosCopy
 {
@@ -99,8 +95,6 @@ namespace Wivuu.AzCosmosCopy
 
     public class DbCopier
     {
-        static readonly RecyclableMemoryStreamManager streamManager = new ();
-
         public abstract record CopyDiagnostic(string container);
         public record CopyDiagnosticMessage(string container, string message, bool warning = false) : CopyDiagnostic(container);
         public record CopyDiagnosticProgress(string container, int progress, int total) : CopyDiagnostic(container);
@@ -108,9 +102,9 @@ namespace Wivuu.AzCosmosCopy
         public record CopyDiagnosticFailed(string container, Exception exception) : CopyDiagnostic(container);
 
         /// <summary>
-        /// Copy with interactive grid
+        /// Render activity from input stream
         /// </summary>
-        public static async Task<bool> CopyWithDetails(DbCopierOptions options, CancellationToken cancellationToken = default)
+        public static async Task<bool> RenderCopyDetailsAsync(IAsyncEnumerable<CopyDiagnostic> activity)
         {
             try
             {
@@ -132,7 +126,7 @@ namespace Wivuu.AzCosmosCopy
                     {
                         var tasks = new Dictionary<string, ProgressTask>();
 
-                        await foreach (var diag in CopyAsync(options, cancellationToken))
+                        await foreach (var diag in activity)
                         {
                             if (string.IsNullOrEmpty(diag.container))
                             {
@@ -266,19 +260,24 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Retrieve all documents from the input container
         /// </summary>
-        public static async IAsyncEnumerable<Document> GetDocuments(
+        public static async IAsyncEnumerable<object> GetDocuments(
             Container container,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // Retrieve all documents
             using var docFeed = container.GetItemQueryStreamIterator();
 
+            var serializer = Newtonsoft.Json.JsonSerializer.CreateDefault();
+
             // Producer
             while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
             {
                 using var response = await docFeed.ReadNextAsync();
 
-                var all = await JsonSerializer.DeserializeAsync<DocumentContainer>(response.Content);
+                using var sr = new StreamReader(response.Content);
+                using var jr = new Newtonsoft.Json.JsonTextReader(sr);
+
+                var all = serializer.Deserialize<DocumentContainer>(jr);
 
                 // Yield back all documents found
                 for (var i = 0; i < all!.Documents.Count; ++i)
@@ -395,29 +394,18 @@ namespace Wivuu.AzCosmosCopy
                     if (total == null || total > 0)
                     {
                         var processed = 0;
-                        var (firstPart, pkPath) = c.PartitionKeyPath[1..].Replace('/', '.').SplitTwo('.');
 
-                        var buffer = new BufferBlock<Document>(new ()
+                        var buffer = new BufferBlock<object>(new ()
                         {
                             BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
                             CancellationToken = cancellationToken
                         });
 
                         // Consumer
-                        var consumer = new ActionBlock<Document>(
+                        var consumer = new ActionBlock<object>(
                             async item =>
                             {
-                                using var stream = streamManager.GetStream();
-
-                                using (var sw = new Utf8JsonWriter(stream))
-                                    JsonSerializer.Serialize(sw, item);
-
-                                stream.Seek(0, SeekOrigin.Begin);
-
-                                var pk   = item.GetPartitionKey(firstPart, pkPath);
-                                var resp = await containerScale.Container.UpsertItemStreamAsync(stream, pk);
-
-                                resp.EnsureSuccessStatusCode();
+                                await containerScale.Container.UpsertItemAsync(item);
 
                                 var progress = Interlocked.Increment(ref processed);
 
@@ -492,14 +480,14 @@ namespace Wivuu.AzCosmosCopy
                         await bulkExecutor.InitializeAsync();
 
                         // Consumer pipeline
-                        var buffer = new BufferBlock<Document>(new ()
+                        var buffer = new BufferBlock<object>(new ()
                         {
                             BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
                             CancellationToken = cancellationToken
                         });
 
-                        var serializer = new TransformBlock<Document, string>(
-                            data => JsonSerializer.Serialize(data),
+                        var serializer = new TransformBlock<object, string>(
+                            data => Newtonsoft.Json.JsonConvert.SerializeObject(data),
                             new ()
                             {
                                 SingleProducerConstrained = true,
@@ -623,7 +611,7 @@ namespace Wivuu.AzCosmosCopy
 
         public record CopyDocumentStream(
             CopyContainerInfo ContainerInfo,
-            IAsyncEnumerable<Document> DocumentProducer
+            IAsyncEnumerable<object> DocumentProducer
         );
 
         /// <summary>
@@ -631,80 +619,7 @@ namespace Wivuu.AzCosmosCopy
         /// </summary>
         public class DocumentContainer
         {
-            public List<Document> Documents { get; set; } = default!;
-        }
-
-        /// <summary>
-        /// Single document in response
-        /// </summary>
-        public class Document
-        {
-            [JsonIgnore, JsonPropertyName("_rid")]
-            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_rid")]
-            public string? Rid { get; set; }
-
-            [JsonIgnore, JsonPropertyName("_self")]
-            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_self")]
-            public string? Self { get; set; }
-
-            [JsonIgnore, JsonPropertyName("_etag")]
-            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_etag")]
-            public int? ETag { get; set; }
-
-            [JsonIgnore, JsonPropertyName("_attachments")]
-            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_attachments")]
-            public string? Attachments { get; set; }
-
-            [JsonIgnore, JsonPropertyName("_ts")]
-            [Newtonsoft.Json.JsonIgnore, Newtonsoft.Json.JsonProperty("_ts")]
-            public int? Ts { get; set; }
-
-            [JsonExtensionData]
-            [Newtonsoft.Json.JsonExtensionData]
-            public Dictionary<string, JsonElement> Properties { get; set; } = default!;
-
-            public PartitionKey GetPartitionKey(string firstPart, string? pkPath)
-            {
-                if (Properties.TryGetValue(firstPart, out var jsonToken))
-                {
-                    if (pkPath is not null)
-                    {
-                        if (jsonToken.SelectToken(pkPath) is JsonElement subToken)
-                            return GetPK(subToken);
-                    }
-                    else
-                        return GetPK(jsonToken);
-                }
-
-                return PartitionKey.None;
-
-                static PartitionKey GetPK(JsonElement jsonToken)
-                {
-                    return jsonToken.ValueKind switch
-                    {
-                        JsonValueKind.String => new(jsonToken.GetString()),
-                        JsonValueKind.False  => new(false),
-                        JsonValueKind.True   => new(true),
-                        JsonValueKind.Number => new(jsonToken.GetDouble()),
-                        _                    => PartitionKey.None
-                    };
-                }
-            }
-        }
-    }
-
-    static class StringExtensions
-    {
-        /// <summary>
-        /// Split into two strings
-        /// </summary>
-        public static (string lhs, string? rhs) SplitTwo(this string input, char id)
-        {
-            var index = input.IndexOf(id, 1);
-
-            return index == -1
-                ? (input, null)
-                : (input[..index], input[(index + 1)..]);
+            public List<object> Documents { get; set; } = default!;
         }
     }
 }
