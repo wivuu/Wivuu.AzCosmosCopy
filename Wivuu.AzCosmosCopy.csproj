@@ -11,14 +11,15 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>AzCosmosCopy</ToolCommandName>
     <PackageOutputPath>./nupkg</PackageOutputPath>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
 
-    <VersionPrefix>1.0.3</VersionPrefix>
+    <VersionPrefix>1.0.4</VersionPrefix>
     <Authors>Erik O'Leary</Authors>
     <Company>Wivuu</Company>
     <Product>Wivuu AzCosmosCopy</Product>
     <Description>Tool to copy cosmos db databases.</Description>
     <ReleaseNotes>
-    - Add options to render output lib
+    - Support bulk executor library for non-serverless destinations
     </ReleaseNotes>
     <PackageTags>cosmos;cosmosdb;azure;copy</PackageTags>
     <PackageProjectUrl>https://github.com/wivuu/Wivuu.AzCosmosCopy</PackageProjectUrl>
@@ -37,12 +38,15 @@
   <ItemGroup>
     <PackageReference Include="BlushingPenguin.JsonPath" Version="1.0.3" />
     <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.15.0" />
+    <PackageReference Include="Microsoft.Azure.CosmosDB.BulkExecutor" Version="2.5.1-preview" />
     <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="1.3.6" />
     <PackageReference Include="Spectre.Console" Version="0.32.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta1.20574.7" />
+    <PackageReference Include="System.Linq.Async" Version="5.0.0" />
   </ItemGroup>
 
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
+    <TargetFrameworks>net5.0;netstandard2.1</TargetFrameworks>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>
     <ToolCommandName></ToolCommandName>

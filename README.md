@@ -34,9 +34,12 @@ Options:
   -m, --minimal                                          Output minimal information
   --parallel-containers, --pc <parallel-containers>      Parallel container copies
   --parallel-documents, --pd <parallel-documents>        Parallel document copies
+  -b, --bulk                                             Use bulk executor (serverless not supported)
+  --dbscale <dbscale>                                    Destination database scale (serverless not supported)
+  --dcscale <dcscale>                                    Destination container scale (serverless not supported)
   --version                                              Show version information
   -?, -h, --help                                         Show help and usage information
 ```
 
 ## Future
-- Add support for Bulk Executor API (https://github.com/Azure/azure-cosmosdb-bulkexecutor-dotnet-getting-started). This API does not currently support serverless, so it was not used by default
+- Ability to add 'transform' and 'filter' steps to copy process (for use as lib)

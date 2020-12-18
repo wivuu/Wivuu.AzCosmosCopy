@@ -16,7 +16,8 @@
                 "-d", "${input:dest} ",
                 "--dd", "${input:destdb}",
                 "--pc", "1",
-                "--pd", "5"
+                "--pd", "5",
+                "-b"
             ],
             "cwd": "${workspaceFolder}",
             "console": "internalConsole",
@@ -49,6 +50,6 @@
             "id": "destdb",
             "description": "Destination account database",
             "type": "promptString"
-        },
+        }
     ]
 }

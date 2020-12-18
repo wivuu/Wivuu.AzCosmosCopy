@@ -2,7 +2,6 @@
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Threading;
-using Microsoft.Azure.Cosmos;
 using Wivuu.AzCosmosCopy;
 
 var root = new RootCommand
@@ -23,17 +22,23 @@ var root = new RootCommand
         new [] { "--dd", "--destination-database" }, "Destination database name"
     ),
 
-    new Option(
-        new [] { "-m", "--minimal" }, "Output minimal information"
-    ),
-
     new Option<int?>(
         new [] { "--pc", "--parallel-containers" }, "Parallel container copies"
     ),
     
     new Option<int?>(
         new [] { "--pd", "--parallel-documents" }, "Parallel document copies"
-    )
+    ),
+
+    new Option(new [] { "-b", "--bulk" }, "Use bulk executor (serverless not supported)"),
+
+    new Option<int?>(
+        new [] { "--dbscale" }, "Destination database scale (serverless not supported)"
+    ),
+    
+    new Option<int?>(
+        new [] { "--dcscale" }, "Destination container scale (serverless not supported)"
+    ),
 };
 
 // Add validators
@@ -57,34 +62,21 @@ root.Handler = CommandHandler.Create(
         if (args.Destination is null && args.DestinationDatabase == args.SourceDatabase)
             throw new System.Exception("--destination cannot be copied to --source with the same --destination-database name");
 
-        var dbOptions = new CosmosClientOptions
-        {
-            ConnectionMode                        = ConnectionMode.Direct,
-            AllowBulkExecution                    = true,
-            MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromMinutes(5),
-            MaxRetryAttemptsOnRateLimitedRequests = 60,
-        };
-
-        var sourceClient = new CosmosClient(args.Source, dbOptions);
-
-        var destClient = new CosmosClient(
-            string.IsNullOrWhiteSpace(args.Destination) ? args.Source : args.Destination, 
-            dbOptions);
-
         var copyOptions = new DbCopierOptions(
-            sourceClient,
-            destClient,
+            args.Source,
+            string.IsNullOrWhiteSpace(args.Destination) ? args.Source : args.Destination,
             args.SourceDatabase,
             args.DestinationDatabase ?? args.SourceDatabase
         )
         {
-            MaxContainerParallel = args.ParallelContainers,
-            MaxDocCopyParallel   = args.ParallelDocuments,
+            MaxContainerParallel           = args.ParallelContainers,
+            MaxDocCopyParallel             = args.ParallelDocuments,
+            UseBulk                        = args.Bulk,
+            DestinationContainerThroughput = args.DcScale,
+            DestinationDbThroughput        = args.DbScale,
         };
 
-        var result = args.Minimal
-            ? await DbCopier.CopyMinimal(copyOptions, cancellation.Token)
-            : await DbCopier.CopyWithDetails(copyOptions, cancellation.Token);
+        var result = await DbCopier.CopyWithDetails(copyOptions, cancellation.Token);
 
         return result ? 0 : 1;
     });
@@ -104,7 +96,9 @@ class Args
     public string SourceDatabase { get; init; } = default!;
     public string? Destination { get; init; }
     public string? DestinationDatabase { get; init; }
-    public bool Minimal { get; set; }
     public int ParallelContainers { get; set; } = 10;
     public int ParallelDocuments { get; set; } = 100;
+    public bool Bulk { get; set; }
+    public int? DbScale { get; set; }
+    public int? DcScale { get; set; }
 }
