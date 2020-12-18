@@ -41,4 +41,4 @@ Options:
 ```
 
 ## Future
-- Add support for rendering diagnostics via library with custom copyasync invocation
+- Support passing 'strings' instead of 'objects' to pre-serialize data

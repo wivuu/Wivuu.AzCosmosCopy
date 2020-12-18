@@ -13,14 +13,10 @@
     <PackageOutputPath>./nupkg</PackageOutputPath>
     <ServerGarbageCollection>true</ServerGarbageCollection>
 
-    <VersionPrefix>1.0.6</VersionPrefix>
     <Authors>Erik O'Leary</Authors>
     <Company>Wivuu</Company>
     <Product>Wivuu AzCosmosCopy</Product>
     <Description>Tool to copy cosmos db databases.</Description>
-    <ReleaseNotes>
-    - Simplified copier, use underlying serializer rather than stream serializer
-    </ReleaseNotes>
     <PackageTags>cosmos;cosmosdb;azure;copy</PackageTags>
     <PackageProjectUrl>https://github.com/wivuu/Wivuu.AzCosmosCopy</PackageProjectUrl>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
@@ -28,9 +24,28 @@
     <RepositoryType>git</RepositoryType>
     <!-- <IncludeSymbols>true</IncludeSymbols> -->
     <!-- <SymbolPackageFormat>snupkg</SymbolPackageFormat> -->
-
   </PropertyGroup>
   
+  <PropertyGroup Condition=" '$(AsLibrary)' != 'true' ">
+    <VersionPrefix>1.0.6</VersionPrefix>
+    <ReleaseNotes>
+    - Simplified copier, use underlying serializer rather than stream serializer
+    </ReleaseNotes>
+  </PropertyGroup>
+  
+  <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
+    <VersionPrefix>1.0.7</VersionPrefix>
+    <ReleaseNotes>
+    - Split destination options from source options
+    - Version separately from tool
+    </ReleaseNotes>
+    <OutputType>Library</OutputType>
+    <PackAsTool>false</PackAsTool>
+    <ToolCommandName></ToolCommandName>
+    <Description>Library to copy cosmos db databases.</Description>
+    <AssemblyName>Wivuu.AzCosmosCopy</AssemblyName>
+  </PropertyGroup>
+
   <ItemGroup>
     <None Include="LICENSE.md" Pack="true" PackagePath="$(PackageLicenseFile)" />
   </ItemGroup>
@@ -42,14 +57,6 @@
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta1.20574.7" />
     <PackageReference Include="System.Linq.Async" Version="5.0.0" />
   </ItemGroup>
-
-  <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <OutputType>Library</OutputType>
-    <PackAsTool>false</PackAsTool>
-    <ToolCommandName></ToolCommandName>
-    <Description>Library to copy cosmos db databases.</Description>
-    <AssemblyName>Wivuu.AzCosmosCopy</AssemblyName>
-  </PropertyGroup>
 
   <ItemGroup Condition=" '$(AsLibrary)' == 'true' ">
     <PackageReference Remove="System.CommandLine" />

@@ -16,11 +16,9 @@ using System.IO;
 
 namespace Wivuu.AzCosmosCopy
 {
-    public record DbCopierOptions
+    public record DbCopierDestinationOptions
     (
-        string Source,
         string Destination,
-        string SourceDatabase,
         string DestinationDatabase
     )
     {
@@ -34,7 +32,7 @@ namespace Wivuu.AzCosmosCopy
             MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromMinutes(5),
             MaxRetryAttemptsOnRateLimitedRequests = 60,
         };
-
+        
         /// <summary>
         /// Execute N container copies in parallel
         /// </summary>
@@ -79,7 +77,7 @@ namespace Wivuu.AzCosmosCopy
         /// Throughput for newly created databases
         /// </summary>
         public int? DestinationDbThroughput { get; set; }
-
+        
         internal (Uri uri, string key) GetDestinationComponents()
         {
             var pattern = new Regex(@"AccountEndpoint=(?<uri>[^;]+);AccountKey=(?<key>[^;]+)");
@@ -92,6 +90,14 @@ namespace Wivuu.AzCosmosCopy
             throw new Exception("Unable to parse input destination connection string");
         }
     }
+
+    public record DbCopierOptions
+    (
+        string Source,
+        string Destination,
+        string SourceDatabase,
+        string DestinationDatabase
+    ) : DbCopierDestinationOptions(Destination, DestinationDatabase);
 
     public class DbCopier
     {
@@ -226,62 +232,27 @@ namespace Wivuu.AzCosmosCopy
 
             var containersWithDocs = 
                 from c in GetSourceContainers(sourceDb, cancellationToken)
-                select new CopyDocumentStream(c, GetDocuments(c.SourceContainer, cancellationToken));
+                select new CopyDocumentStream(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
 
             return CopyAsync(containersWithDocs, options, cancellationToken);
         }
 
         /// <summary>
-        /// Retrieve all containers from the input database
+        /// Copy from input container document info to destination
         /// </summary>
-        public static async IAsyncEnumerable<CopyContainerInfo> GetSourceContainers(
-            Database sourceDb,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        public static IAsyncEnumerable<CopyDiagnostic> CopyAsync(
+            CopyContainerInfo ContainerInfo,
+            IAsyncEnumerable<object> Documents,
+            DbCopierDestinationOptions options,
+            CancellationToken cancellationToken = default)
         {
-            // Gather list of containers to copy
-            using var feed = sourceDb.GetContainerQueryIterator<ContainerProperties>();
+            return CopyAsync(CopySingle(), options, cancellationToken);
 
-            while (feed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            async IAsyncEnumerable<CopyDocumentStream> CopySingle()
             {
-                foreach (var properties in await feed.ReadNextAsync())
-                {
-                    var sourceContainer = sourceDb.GetContainer(properties.Id);
-                    var total = await sourceContainer.GetItemLinqQueryable<object>(true).CountAsync();
+                await Task.Yield();
 
-                    yield return new CopyContainerInfo(
-                        Properties: properties,
-                        SourceContainer: sourceContainer,
-                        NumMessages: total
-                    );
-                }
-            }
-        }
-
-        /// <summary>
-        /// Retrieve all documents from the input container
-        /// </summary>
-        public static async IAsyncEnumerable<object> GetDocuments(
-            Container container,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            // Retrieve all documents
-            using var docFeed = container.GetItemQueryStreamIterator();
-
-            var serializer = Newtonsoft.Json.JsonSerializer.CreateDefault();
-
-            // Producer
-            while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
-            {
-                using var response = await docFeed.ReadNextAsync();
-
-                using var sr = new StreamReader(response.Content);
-                using var jr = new Newtonsoft.Json.JsonTextReader(sr);
-
-                var all = serializer.Deserialize<DocumentContainer>(jr);
-
-                // Yield back all documents found
-                for (var i = 0; i < all!.Documents.Count; ++i)
-                    yield return all.Documents[i];
+                yield return new CopyDocumentStream(ContainerInfo, Documents);
             }
         }
 
@@ -290,10 +261,10 @@ namespace Wivuu.AzCosmosCopy
         /// </summary>
         public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
             IAsyncEnumerable<CopyDocumentStream> allContainers,
-            DbCopierOptions options,
+            DbCopierDestinationOptions options,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            var (_, dest, sourceDatabase, destinationDatabase) = options;
+            var (dest, destinationDatabase) = options;
             var destClient = new CosmosClient(dest, options.ClientOptions);
 
             var diagnostics = Channel.CreateBounded<CopyDiagnostic>(
@@ -595,31 +566,85 @@ namespace Wivuu.AzCosmosCopy
             }
         }
 
+        /// <summary>
+        /// Retrieve all containers from the input database
+        /// </summary>
+        public static async IAsyncEnumerable<CopyContainerInfo> GetSourceContainers(
+            Database sourceDb,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // Gather list of containers to copy
+            using var feed = sourceDb.GetContainerQueryIterator<ContainerProperties>();
+
+            while (feed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            {
+                foreach (var properties in await feed.ReadNextAsync())
+                {
+                    var sourceContainer = sourceDb.GetContainer(properties.Id);
+                    var total = await sourceContainer.GetItemLinqQueryable<object>(true).CountAsync();
+
+                    yield return new CopyContainerInfo(
+                        Properties: properties,
+                        NumMessages: total
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Retrieve all documents from the input container
+        /// </summary>
+        public static async IAsyncEnumerable<object> GetDocuments(
+            Database database,
+            string containerName,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // Retrieve all documents
+            var container = database.GetContainer(containerName);
+            using var docFeed = container.GetItemQueryStreamIterator();
+
+            var serializer = Newtonsoft.Json.JsonSerializer.CreateDefault();
+
+            // Producer
+            while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            {
+                using var response = await docFeed.ReadNextAsync();
+
+                using var sr = new StreamReader(response.Content);
+                using var jr = new Newtonsoft.Json.JsonTextReader(sr);
+
+                var all = serializer.Deserialize<DocumentContainer>(jr);
+
+                // Yield back all documents found
+                for (var i = 0; i < all!.Documents.Count; ++i)
+                    yield return all.Documents[i];
+            }
+        }
+
         record CreateScaled(Container Container, Func<Task> Completion) : System.IAsyncDisposable
         {
             public async ValueTask DisposeAsync() => await Completion();
         }
+    }
 
-        /// <summary>
-        /// Class which informs copier pipeline what data to copy
-        /// </summary>
-        public record CopyContainerInfo(
-            ContainerProperties Properties,
-            Container SourceContainer,
-            int? NumMessages = null
-        );
+    /// <summary>
+    /// Class which informs copier pipeline what data to copy
+    /// </summary>
+    public record CopyContainerInfo(
+        ContainerProperties Properties,
+        int? NumMessages = null
+    );
 
-        public record CopyDocumentStream(
-            CopyContainerInfo ContainerInfo,
-            IAsyncEnumerable<object> DocumentProducer
-        );
+    public record CopyDocumentStream(
+        CopyContainerInfo ContainerInfo,
+        IAsyncEnumerable<object> DocumentProducer
+    );
 
-        /// <summary>
-        /// Document response container
-        /// </summary>
-        public class DocumentContainer
-        {
-            public List<object> Documents { get; set; } = default!;
-        }
+    /// <summary>
+    /// Document response container
+    /// </summary>
+    public class DocumentContainer
+    {
+        public List<object> Documents { get; set; } = default!;
     }
 }
