@@ -42,5 +42,4 @@ Options:
 ```
 
 ## Future
-- More code sharing (DRY)
 - Ability to add 'transform' and 'filter' steps to copy process (for use as lib)

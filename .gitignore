@@ -6,6 +6,7 @@
 nupkg/
 nugetkey.txt
 test.ps1
+Test.cs
 
 # User-specific files
 *.rsuser

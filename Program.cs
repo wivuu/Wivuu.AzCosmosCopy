@@ -2,7 +2,6 @@
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Threading;
-using Microsoft.Azure.Cosmos;
 using Wivuu.AzCosmosCopy;
 
 var root = new RootCommand
@@ -21,10 +20,6 @@ var root = new RootCommand
 
     new Option<string?>(
         new [] { "--dd", "--destination-database" }, "Destination database name"
-    ),
-
-    new Option(
-        new [] { "-m", "--minimal" }, "Output minimal information"
     ),
 
     new Option<int?>(
@@ -81,9 +76,7 @@ root.Handler = CommandHandler.Create(
             DestinationDbThroughput        = args.DbScale,
         };
 
-        var result = args.Minimal
-            ? await DbCopier.CopyMinimal(copyOptions, cancellation.Token)
-            : await DbCopier.CopyWithDetails(copyOptions, cancellation.Token);
+        var result = await DbCopier.CopyWithDetails(copyOptions, cancellation.Token);
 
         return result ? 0 : 1;
     });
@@ -103,7 +96,6 @@ class Args
     public string SourceDatabase { get; init; } = default!;
     public string? Destination { get; init; }
     public string? DestinationDatabase { get; init; }
-    public bool Minimal { get; set; }
     public int ParallelContainers { get; set; } = 10;
     public int ParallelDocuments { get; set; } = 100;
     public bool Bulk { get; set; }

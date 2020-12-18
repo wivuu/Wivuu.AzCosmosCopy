@@ -1,6 +1,6 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -67,7 +67,7 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Enqueue N table display render updates (affects rendering only)
         /// </summary>
-        public int UIRenderQueueCapacity { get; init; } = 1000;
+        public int UIRenderQueueCapacity { get; init; } = 5000;
 
         /// <summary>
         /// Whether or not to use bulk executor (serverless not supported)
@@ -130,98 +130,88 @@ namespace Wivuu.AzCosmosCopy
                     })
                     .StartAsync(async ctx =>
                     {
-                        var tasks = new SortedDictionary<string, ProgressTask>();
+                        var tasks = new Dictionary<string, ProgressTask>();
 
                         await foreach (var diag in CopyAsync(options, cancellationToken))
                         {
-                            if (!tasks.TryGetValue(diag.container, out var task))
+                            if (string.IsNullOrEmpty(diag.container))
                             {
-                                var taskName = string.IsNullOrEmpty(diag.container) ? "n/a" : diag.container;
+                                switch (diag)
+                                {
+                                    case CopyDiagnosticMessage(var container, var message, var warning):
+                                        AnsiConsole.MarkupLine(
+                                            (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
+                                        );
+                                        continue;
 
-                                tasks.Add(diag.container, task = ctx.AddTask(taskName, new () { MaxValue = 1 }));
+                                    case CopyDiagnosticFailed(var container, var e):
+                                        if (container is null)
+                                        {
+                                            AnsiConsole.MarkupLine(e switch
+                                            {
+                                                TaskCanceledException => "[yellow]Cancelled[/]",
+                                                _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
+                                            });
+                                            continue;
+                                        }
+                                        break;
+
+                                    default:
+                                        throw new NotSupportedException("Container name must be specified");
+                                }
                             }
-
-                            switch (diag)
+                            else
                             {
-                                case CopyDiagnosticProgress(var container, int progress, int total):
-                                    var lastAmount = task.Value * total;
-                                    task.Increment((progress - lastAmount) / total);
-                                    break;
+                                if (!tasks.TryGetValue(diag.container, out var task))
+                                {
+                                    var taskName = diag.container;
 
-                                case CopyDiagnosticMessage(var container, var message, var warning):
-                                    AnsiConsole.MarkupLine(
-                                        $"{container} - " +
-                                        (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
-                                    );
-                                    break;
+                                    tasks.Add(taskName, task = ctx.AddTask(taskName, new () { MaxValue = 1 }));
+                                }
 
-                                case CopyDiagnosticDone(var container):
-                                    task.Increment(1);
-                                    task.StopTask();
+                                switch (diag)
+                                {
+                                    case CopyDiagnosticProgress(var container, int progress, int total):
+                                        var lastAmount = task.Value * total;
+                                        task.Increment((progress - lastAmount) / total);
+                                        break;
 
-                                    AnsiConsole.MarkupLine(
-                                        $"{container} - " +
-                                        $"[green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
-                                    );
-                                    break;
+                                    case CopyDiagnosticMessage(var container, var message, var warning):
+                                        AnsiConsole.MarkupLine(
+                                            $"{container} - " +
+                                            (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
+                                        );
+                                        break;
 
-                                case CopyDiagnosticFailed(var container, var e):
-                                    task.StopTask();
+                                    case CopyDiagnosticDone(var container):
+                                        task.Increment(1);
+                                        task.StopTask();
 
-                                    AnsiConsole.MarkupLine($"{container} - " + e switch
-                                    {
-                                        TaskCanceledException => "[yellow]Cancelled[/]",
-                                        _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
-                                    });
-                                    break;
+                                        AnsiConsole.MarkupLine(
+                                            $"{container} - [green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
+                                        );
+                                        break;
+
+                                    case CopyDiagnosticFailed(var container, var e):
+                                        task.StopTask();
+
+                                        AnsiConsole.MarkupLine($"{container} - " + e switch
+                                        {
+                                            TaskCanceledException => "[yellow]Cancelled[/]",
+                                            _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
+                                        });
+                                        break;
+                                }
                             }
                         }
                     });
 
                 return true;
             }
-            catch (Exception error)
+            catch (TaskCanceledException)
             {
-                AnsiConsole.WriteException(error);
+                AnsiConsole.MarkupLine("[yellow]Copy cancelled[/]");
                 return false;
-            }
-        }
-
-        /// <summary>
-        /// Copy with minimal output diagnostics
-        /// </summary>
-        public static async Task<bool> CopyMinimal(DbCopierOptions options, CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                Console.WriteLine("AzCosmosCopy");
-                Console.WriteLine("Starting...");
-
-                Stopwatch sw = new();
-                sw.Start();
-
-                await foreach (var diag in CopyAsync(options, cancellationToken))
-                {
-                    switch (diag)
-                    {
-                        case CopyDiagnosticMessage(var container, var message, _):
-                            AnsiConsole.WriteLine($"{container}\t\t- {message}");
-                            break;
-                        case CopyDiagnosticDone(var container):
-                            AnsiConsole.WriteLine($"{container}\t\t- Done");
-                            break;
-                        case CopyDiagnosticFailed(var container, var error):
-                            AnsiConsole.Write($"{container} -");
-                            AnsiConsole.WriteException(error);
-                            break;
-                    }
-                }
-
-                sw.Stop();
-
-                Console.WriteLine($"Finished after {sw.Elapsed.TotalSeconds:#,0.###} seconds");
-
-                return true;
             }
             catch (Exception error)
             {
@@ -237,16 +227,22 @@ namespace Wivuu.AzCosmosCopy
             DbCopierOptions options,
             CancellationToken cancellationToken = default)
         {
-            var sourceClient = new CosmosClient(options.Source, options.ClientOptions);
-            var sourceDb     = sourceClient.GetDatabase(options.SourceDatabase);
+            var sourceDb = new CosmosClient(options.Source, options.ClientOptions)
+                .GetDatabase(options.SourceDatabase);
 
-            return CopyAsync(GetSourceContainers(sourceDb, cancellationToken), options, cancellationToken);
+            var containersWithDocs = 
+                from c in GetSourceContainers(sourceDb, cancellationToken)
+                select new CopyDocumentStream(c, GetDocuments(c.SourceContainer, cancellationToken));
+
+            return CopyAsync(containersWithDocs, options, cancellationToken);
         }
 
         /// <summary>
         /// Retrieve all containers from the input database
         /// </summary>
-        public static async IAsyncEnumerable<CopyContainerInfo> GetSourceContainers(Database sourceDb, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        public static async IAsyncEnumerable<CopyContainerInfo> GetSourceContainers(
+            Database sourceDb,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // Gather list of containers to copy
             using var feed = sourceDb.GetContainerQueryIterator<ContainerProperties>();
@@ -257,10 +253,10 @@ namespace Wivuu.AzCosmosCopy
                 {
                     var sourceContainer = sourceDb.GetContainer(properties.Id);
                     var total = await sourceContainer.GetItemLinqQueryable<object>(true).CountAsync();
-                            
+
                     yield return new CopyContainerInfo(
                         Properties: properties,
-                        DocumentProducer: GetDocuments(sourceContainer, cancellationToken),
+                        SourceContainer: sourceContainer,
                         NumMessages: total
                     );
                 }
@@ -270,7 +266,9 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Retrieve all documents from the input container
         /// </summary>
-        public static async IAsyncEnumerable<Document> GetDocuments(Container container, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        public static async IAsyncEnumerable<Document> GetDocuments(
+            Container container,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // Retrieve all documents
             using var docFeed = container.GetItemQueryStreamIterator();
@@ -282,51 +280,70 @@ namespace Wivuu.AzCosmosCopy
 
                 var all = await JsonSerializer.DeserializeAsync<DocumentContainer>(response.Content);
 
-                // Post
+                // Yield back all documents found
                 for (var i = 0; i < all!.Documents.Count; ++i)
                     yield return all.Documents[i];
             }
         }
 
         /// <summary>
-        /// Copy from input containers to destination
+        /// Copy from input container document info to destination
         /// </summary>
         public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
-            IAsyncEnumerable<CopyContainerInfo> allContainers,
+            IAsyncEnumerable<CopyDocumentStream> allContainers,
             DbCopierOptions options,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var (_, dest, sourceDatabase, destinationDatabase) = options;
             var destClient = new CosmosClient(dest, options.ClientOptions);
 
-            var channel = Channel.CreateBounded<CopyDiagnostic>(
+            var diagnostics = Channel.CreateBounded<CopyDiagnostic>(
                 new BoundedChannelOptions(options.UIRenderQueueCapacity)
                 {
                     FullMode = BoundedChannelFullMode.DropOldest
                 });
 
+            var diag = diagnostics.Writer;
+
             // Execute copy
-            var copyTask = CopyDataPipeline(channel.Writer);
+            var copyTask = CopyDataPipeline();
 
             // For every message in the channel, yield back
-            await foreach (var item in channel.Reader.ReadAllAsync())
+            await foreach (var item in diagnostics.Reader.ReadAllAsync())
                 yield return item;
 
             await copyTask;
 
             // Pipeline which copies all containers
-            async Task CopyDataPipeline(ChannelWriter<CopyDiagnostic> channel)
+            async Task CopyDataPipeline()
             {
-                var buffer = new BufferBlock<CopyContainerInfo>(new ()
+                try
+                {
+                    var throughput = options.DestinationDbThroughput.HasValue
+                        ? ThroughputProperties.CreateAutoscaleThroughput(options.DestinationDbThroughput.Value switch
+                        {
+                            < 4000 => 4000,
+                            var n => n
+                        })
+                        : null;
+
+                    await destClient.CreateDatabaseAsync(destinationDatabase, throughput);
+                }
+                catch (CosmosException)
+                {
+                    diag.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
+                }
+
+                var buffer = new BufferBlock<CopyDocumentStream>(new ()
                 {
                     BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel),
                     CancellationToken = cancellationToken
                 });
 
-                var action = new ActionBlock<CopyContainerInfo>(
+                var action = new ActionBlock<CopyDocumentStream>(
                     options.UseBulk
-                        ? CopyBulkFactory(channel)
-                        : CopyStandardFactory(channel), 
+                        ? CopyBulkFactory
+                        : CopyStandardFactory, 
                     new ()
                     {
                         MaxDegreeOfParallelism    = options.MaxContainerParallel,
@@ -338,30 +355,11 @@ namespace Wivuu.AzCosmosCopy
                 {
                     try
                     {
-                        try
-                        {
-                            var throughput = options.DestinationDbThroughput.HasValue
-                                ? ThroughputProperties.CreateAutoscaleThroughput(options.DestinationDbThroughput.Value switch
-                                {
-                                    < 4000 => 4000,
-                                    var n => n
-                                })
-                                : null;
-
-                            await destClient.CreateDatabaseAsync(destinationDatabase, throughput);
-                        }
-                        catch (CosmosException)
-                        {
-                            channel.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
-                            // return;
-                        }
-
                         await foreach (var c in allContainers)
                         {
-                            channel.TryWrite(new CopyDiagnosticMessage(c.Properties.Id, "Queued..."));
+                            diag.TryWrite(new CopyDiagnosticMessage(c.ContainerInfo.Properties.Id, "Queued..."));
 
-                            while (!buffer.Post(c))
-                                await Task.Yield();
+                            await buffer.SendAsync(c, cancellationToken);
                         }
                     }
                     finally
@@ -374,23 +372,25 @@ namespace Wivuu.AzCosmosCopy
                         }
                         finally
                         {
-                            channel.Complete();
+                            diag.Complete();
                         }
                     }
                 }
             }
 
             // Pipeline which copies a single container using the standard Cosmos API
-            Func<CopyContainerInfo, Task> CopyStandardFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (CopyContainerInfo info) =>
+            async Task CopyStandardFactory(CopyDocumentStream info)
             {
-                var (c, allDocs, total) = info;
+                var (container, allDocs) = info;
+                var c     = container.Properties;
+                var total = container.NumMessages;
 
                 // Disable indexing
                 await using var containerScale = await CreateScaledContainer(c);
                 
                 try
                 {
-                    messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
+                    diag!.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
 
                     if (total == null || total > 0)
                     {
@@ -421,7 +421,7 @@ namespace Wivuu.AzCosmosCopy
 
                                 var progress = Interlocked.Increment(ref processed);
 
-                                messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
+                                diag!.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
                             },
                             new ()
                             {
@@ -447,20 +447,22 @@ namespace Wivuu.AzCosmosCopy
                         }
                     }
 
-                    messageChannel.TryWrite(new CopyDiagnosticDone(c.Id));
+                    diag.TryWrite(new CopyDiagnosticDone(c.Id));
                 }
                 catch (Exception e)
                 {
-                    messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
+                    diag!.TryWrite(new CopyDiagnosticFailed(c.Id, e));
                 }
             };
         
             // Pipeline which copies a single container using the Bulk Cosmos API
-            Func<CopyContainerInfo, Task> CopyBulkFactory(ChannelWriter<CopyDiagnostic> messageChannel) => async (CopyContainerInfo info) =>
+            async Task CopyBulkFactory(CopyDocumentStream info)
             {
-                var (c, allDocs, total) = info;
+                var (container, allDocs) = info;
+                var properties = container.Properties;
+                var total = container.NumMessages;
 
-                await using var containerScale = await CreateScaledContainer(c);
+                await using var containerScale = await CreateScaledContainer(properties);
 
                 try
                 {
@@ -477,9 +479,9 @@ namespace Wivuu.AzCosmosCopy
 
                     using var destDocClient = new Microsoft.Azure.Documents.Client.DocumentClient(uri, key, policy);
                     var destCollection = await destDocClient.ReadDocumentCollectionAsync(
-                        Microsoft.Azure.Documents.Client.UriFactory.CreateDocumentCollectionUri(destinationDatabase, c.Id));
+                        Microsoft.Azure.Documents.Client.UriFactory.CreateDocumentCollectionUri(destinationDatabase, properties.Id));
 
-                    messageChannel.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
+                    diag!.TryWrite(new CopyDiagnosticMessage(properties.Id, "Copying data..."));
 
                     if (total == null || total > 0)
                     {
@@ -528,7 +530,7 @@ namespace Wivuu.AzCosmosCopy
                                 );
 
                                 var progress = Interlocked.Add(ref processed, (int)response.NumberOfDocumentsImported);
-                                messageChannel.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
+                                diag.TryWrite(new CopyDiagnosticProgress(properties.Id, progress, total ?? progress));
 
                                 // TODO: Handle other scenarios?
                                 // while (response.NumberOfDocumentsImported < items.Length);
@@ -559,11 +561,11 @@ namespace Wivuu.AzCosmosCopy
                         }
                     }
 
-                    messageChannel.TryWrite(new CopyDiagnosticDone(c.Id));
+                    diag.TryWrite(new CopyDiagnosticDone(properties.Id));
                 }
                 catch (Exception e)
                 {
-                    messageChannel.TryWrite(new CopyDiagnosticFailed(c.Id, e));
+                    diag!.TryWrite(new CopyDiagnosticFailed(properties.Id, e));
                 }
             };
 
@@ -615,8 +617,13 @@ namespace Wivuu.AzCosmosCopy
         /// </summary>
         public record CopyContainerInfo(
             ContainerProperties Properties,
-            IAsyncEnumerable<Document> DocumentProducer,
+            Container SourceContainer,
             int? NumMessages = null
+        );
+
+        public record CopyDocumentStream(
+            CopyContainerInfo ContainerInfo,
+            IAsyncEnumerable<Document> DocumentProducer
         );
 
         /// <summary>
