@@ -46,7 +46,6 @@
   </ItemGroup>
 
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <TargetFrameworks>net5.0;netstandard2.1</TargetFrameworks>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>
     <ToolCommandName></ToolCommandName>
