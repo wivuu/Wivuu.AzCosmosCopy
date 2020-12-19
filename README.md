@@ -41,4 +41,5 @@ Options:
 ```
 
 ## Future
+- Switch to Microsoft.Azure.DocumentDB from Microsoft.Azure.Cosmos for non-bulk copy pipeline
 - Support passing 'strings' instead of 'objects' to pre-serialize data

@@ -232,7 +232,7 @@ namespace Wivuu.AzCosmosCopy
 
             var containersWithDocs = 
                 from c in GetSourceContainers(sourceDb, cancellationToken)
-                select new CopyDocumentStream(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
+                select new CopyDocumentStream<object>(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
 
             return CopyAsync(containersWithDocs, options, cancellationToken);
         }
@@ -240,27 +240,27 @@ namespace Wivuu.AzCosmosCopy
         /// <summary>
         /// Copy from input container document info to destination
         /// </summary>
-        public static IAsyncEnumerable<CopyDiagnostic> CopyAsync(
+        public static IAsyncEnumerable<CopyDiagnostic> CopyAsync<T>(
             CopyContainerInfo ContainerInfo,
-            IAsyncEnumerable<object> Documents,
+            IAsyncEnumerable<T> Documents,
             DbCopierDestinationOptions options,
             CancellationToken cancellationToken = default)
         {
             return CopyAsync(CopySingle(), options, cancellationToken);
 
-            async IAsyncEnumerable<CopyDocumentStream> CopySingle()
+            async IAsyncEnumerable<CopyDocumentStream<T>> CopySingle()
             {
                 await Task.Yield();
 
-                yield return new CopyDocumentStream(ContainerInfo, Documents);
+                yield return new CopyDocumentStream<T>(ContainerInfo, Documents);
             }
         }
 
         /// <summary>
         /// Copy from input container document info to destination
         /// </summary>
-        public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
-            IAsyncEnumerable<CopyDocumentStream> allContainers,
+        public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync<T>(
+            IAsyncEnumerable<CopyDocumentStream<T>> allContainers,
             DbCopierDestinationOptions options,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -304,13 +304,13 @@ namespace Wivuu.AzCosmosCopy
                     diag.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
                 }
 
-                var buffer = new BufferBlock<CopyDocumentStream>(new ()
+                var buffer = new BufferBlock<CopyDocumentStream<T>>(new ()
                 {
                     BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel),
                     CancellationToken = cancellationToken
                 });
 
-                var action = new ActionBlock<CopyDocumentStream>(
+                var action = new ActionBlock<CopyDocumentStream<T>>(
                     options.UseBulk
                         ? CopyBulkFactory
                         : CopyStandardFactory, 
@@ -349,24 +349,27 @@ namespace Wivuu.AzCosmosCopy
             }
 
             // Pipeline which copies a single container using the standard Cosmos API
-            async Task CopyStandardFactory(CopyDocumentStream info)
+            async Task CopyStandardFactory(CopyDocumentStream<T> info)
             {
                 var (container, allDocs) = info;
-                var c     = container.Properties;
+                var properties = container.Properties;
                 var total = container.NumMessages;
 
                 // Disable indexing
-                await using var containerScale = await CreateScaledContainer(c);
+                await using var containerScale = await CreateScaledContainer(properties);
                 
                 try
                 {
-                    diag!.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
+                    diag!.TryWrite(new CopyDiagnosticMessage(properties.Id, "Copying data..."));
 
                     if (total == null || total > 0)
                     {
                         var processed = 0;
 
-                        var buffer = new BufferBlock<object>(new ()
+                        var links = new List<IDisposable>();
+                        var linkOptions = new DataflowLinkOptions { PropagateCompletion = true };
+
+                        var producer = new BufferBlock<object>(new ()
                         {
                             BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
                             CancellationToken = cancellationToken
@@ -380,7 +383,7 @@ namespace Wivuu.AzCosmosCopy
 
                                 var progress = Interlocked.Increment(ref processed);
 
-                                diag!.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
+                                diag!.TryWrite(new CopyDiagnosticProgress(properties.Id, progress, total ?? progress));
                             },
                             new ()
                             {
@@ -389,33 +392,48 @@ namespace Wivuu.AzCosmosCopy
                                 CancellationToken         = cancellationToken
                             });
 
-                        using (buffer.LinkTo(consumer, new() { PropagateCompletion = true }))
+                        if (typeof(T) == typeof(string))
                         {
-                            try
-                            {
-                                // Retrieve all documents from producer
-                                await foreach (var doc in allDocs)
-                                    await buffer.SendAsync(doc, cancellationToken);
-                            }
-                            finally
-                            {
-                                buffer.Complete();
+                            var transform = new TransformBlock<object, object>(
+                                item => Newtonsoft.Json.JsonConvert.DeserializeObject(item as string),
+                                new ()
+                                {
+                                    CancellationToken = cancellationToken,
+                                });
 
-                                await consumer.Completion;
-                            }
+                            links.Add( producer.LinkTo(transform, linkOptions) );
+                            links.Add( transform.LinkTo(consumer, linkOptions) );
+                        }
+                        else
+                            links.Add( producer.LinkTo(consumer, linkOptions) );
+
+                        try
+                        {
+                            // Retrieve all documents from producer
+                            await foreach (var doc in allDocs)
+                                await producer.SendAsync(doc!, cancellationToken);
+                        }
+                        finally
+                        {
+                            producer.Complete();
+
+                            await consumer.Completion;
+
+                            foreach (var link in links)
+                                link.Dispose();
                         }
                     }
 
-                    diag.TryWrite(new CopyDiagnosticDone(c.Id));
+                    diag.TryWrite(new CopyDiagnosticDone(properties.Id));
                 }
                 catch (Exception e)
                 {
-                    diag!.TryWrite(new CopyDiagnosticFailed(c.Id, e));
+                    diag!.TryWrite(new CopyDiagnosticFailed(properties.Id, e));
                 }
             };
         
             // Pipeline which copies a single container using the Bulk Cosmos API
-            async Task CopyBulkFactory(CopyDocumentStream info)
+            async Task CopyBulkFactory(CopyDocumentStream<T> info)
             {
                 var (container, allDocs) = info;
                 var properties = container.Properties;
@@ -451,14 +469,16 @@ namespace Wivuu.AzCosmosCopy
                         await bulkExecutor.InitializeAsync();
 
                         // Consumer pipeline
-                        var buffer = new BufferBlock<object>(new ()
+                        var buffer = new BufferBlock<T>(new ()
                         {
                             BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
                             CancellationToken = cancellationToken
                         });
 
-                        var serializer = new TransformBlock<object, string>(
-                            data => Newtonsoft.Json.JsonConvert.SerializeObject(data),
+                        var serializer = new TransformBlock<T, string>(
+                            typeof(T) != typeof(string) 
+                                ? data => Newtonsoft.Json.JsonConvert.SerializeObject(data)
+                                : data => data as string,
                             new ()
                             {
                                 SingleProducerConstrained = true,
@@ -481,7 +501,7 @@ namespace Wivuu.AzCosmosCopy
 
                                 response = await bulkExecutor.BulkImportAsync(
                                     documents: items,
-                                    enableUpsert: true,//false,
+                                    enableUpsert: true,
                                     disableAutomaticIdGeneration: true,
                                     maxConcurrencyPerPartitionKeyRange: null,
                                     maxInMemorySortingBatchSize: null,
@@ -509,7 +529,7 @@ namespace Wivuu.AzCosmosCopy
                             {
                                 // Retrieve all documents from producer
                                 await foreach (var doc in allDocs)
-                                    await buffer.SendAsync(doc, cancellationToken);
+                                    await buffer.SendAsync(doc!, cancellationToken);
                             }
                             finally
                             {
@@ -635,9 +655,9 @@ namespace Wivuu.AzCosmosCopy
         int? NumMessages = null
     );
 
-    public record CopyDocumentStream(
+    public record CopyDocumentStream<T>(
         CopyContainerInfo ContainerInfo,
-        IAsyncEnumerable<object> DocumentProducer
+        IAsyncEnumerable<T> DocumentProducer
     );
 
     /// <summary>
