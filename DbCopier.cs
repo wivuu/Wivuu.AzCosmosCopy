@@ -468,6 +468,10 @@ namespace Wivuu.AzCosmosCopy
                         var bulkExecutor = new BulkExecutor(destDocClient, destCollection);
                         await bulkExecutor.InitializeAsync();
 
+                        // Set retries to 0 to pass complete control to bulk executor.
+                        destDocClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 0;
+                        destDocClient.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 0;
+
                         // Consumer pipeline
                         var buffer = new BufferBlock<T>(new ()
                         {
