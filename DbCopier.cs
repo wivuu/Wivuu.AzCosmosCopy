@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -11,7 +12,6 @@ using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Linq;
 using Microsoft.Azure.CosmosDB.BulkExecutor;
 using Spectre.Console;
-using System.IO;
 
 namespace Wivuu.AzCosmosCopy
 {
@@ -177,7 +177,7 @@ namespace Wivuu.AzCosmosCopy
 
                                     case CopyDiagnosticMessage(var container, var message, var warning):
                                         AnsiConsole.MarkupLine(
-                                            $"{container} - " +
+                                            $"{Markup.Escape(container + " - ")}" +
                                             (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
                                         );
                                         break;
@@ -187,14 +187,15 @@ namespace Wivuu.AzCosmosCopy
                                         task.StopTask();
 
                                         AnsiConsole.MarkupLine(
-                                            $"{container} - [green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
+                                            $"{Markup.Escape(container + " - ")}" +
+                                            $"[green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
                                         );
                                         break;
 
                                     case CopyDiagnosticFailed(var container, var e):
                                         task.StopTask();
 
-                                        AnsiConsole.MarkupLine($"{container} - " + e switch
+                                        AnsiConsole.MarkupLine($"{Markup.Escape(container + " - ")}" + e switch
                                         {
                                             TaskCanceledException => "[yellow]Cancelled[/]",
                                             _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
@@ -229,11 +230,22 @@ namespace Wivuu.AzCosmosCopy
             var sourceDb = new CosmosClient(options.Source, options.ClientOptions)
                 .GetDatabase(options.SourceDatabase);
 
-            var containersWithDocs = 
-                from c in GetSourceContainers(sourceDb, cancellationToken)
-                select new CopyDocumentStream<object>(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
+            if (options.UseBulk)
+            {
+                var containersWithDocs = 
+                    from c in GetSourceContainers(sourceDb, cancellationToken)
+                    select new CopyDocumentStream<string>(c, GetDocumentsAsStrings(sourceDb, c.Properties.Id, cancellationToken));
 
-            return CopyAsync(containersWithDocs, options, cancellationToken);
+                return CopyAsync(containersWithDocs, options, cancellationToken);
+            }
+            else
+            {
+                var containersWithDocs = 
+                    from c in GetSourceContainers(sourceDb, cancellationToken)
+                    select new CopyDocumentStream<object>(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
+
+                return CopyAsync(containersWithDocs, options, cancellationToken);
+            }
         }
 
         /// <summary>
@@ -302,6 +314,9 @@ namespace Wivuu.AzCosmosCopy
                 {
                     diag.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
                 }
+
+                if (!options.UseBulk && typeof(T) == typeof(string))
+                    diag.TryWrite(new CopyDiagnosticMessage("", "Without bulk enabled, strings must be deserialized anyway", warning: true));
 
                 var buffer = new BufferBlock<CopyDocumentStream<T>>(new ()
                 {
@@ -491,7 +506,7 @@ namespace Wivuu.AzCosmosCopy
                             async items =>
                             {
                                 var response = await bulkExecutor.BulkImportAsync(
-                                    documents: items as string[],
+                                    documents: items,
                                     enableUpsert: true,
                                     disableAutomaticIdGeneration: true,
                                     maxConcurrencyPerPartitionKeyRange: null,
@@ -646,11 +661,41 @@ namespace Wivuu.AzCosmosCopy
                 using var sr = new StreamReader(response.Content);
                 using var jr = new Newtonsoft.Json.JsonTextReader(sr);
 
-                var all = serializer.Deserialize<DocumentContainer>(jr);
+                var all = serializer.Deserialize<DocumentContainer<object>>(jr);
 
                 // Yield back all documents found
                 for (var i = 0; i < all!.Documents.Count; ++i)
                     yield return all.Documents[i];
+            }
+        }
+        
+        /// <summary>
+        /// Retrieve all documents from the input container as strings
+        /// </summary>
+        public static async IAsyncEnumerable<string> GetDocumentsAsStrings(
+            Database database,
+            string containerName,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            // Retrieve all documents
+            var container = database.GetContainer(containerName);
+            using var docFeed = container.GetItemQueryStreamIterator();
+            
+            // Producer
+            while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            {
+                using var response = await docFeed.ReadNextAsync();
+
+                var all = await System.Text.Json.JsonSerializer.DeserializeAsync<DocumentContainer<System.Text.Json.JsonElement>>(
+                    response.Content
+                );
+
+                // Yield back all documents found
+                for (var i = 0; i < all!.Documents.Count; ++i)
+                {
+                    if (all.Documents[i].ToString() is string docString)
+                        yield return docString;
+                }
             }
         }
 
@@ -685,8 +730,8 @@ namespace Wivuu.AzCosmosCopy
     /// <summary>
     /// Document response container
     /// </summary>
-    public class DocumentContainer
+    public class DocumentContainer<T>
     {
-        public List<object> Documents { get; set; } = default!;
+        public List<T> Documents { get; set; } = default!;
     }
 }
