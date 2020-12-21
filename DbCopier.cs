@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -10,9 +11,7 @@ using System.Threading;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Cosmos.Linq;
 using Microsoft.Azure.CosmosDB.BulkExecutor;
-using Microsoft.Azure.CosmosDB.BulkExecutor.BulkImport;
 using Spectre.Console;
-using System.IO;
 
 namespace Wivuu.AzCosmosCopy
 {
@@ -178,7 +177,7 @@ namespace Wivuu.AzCosmosCopy
 
                                     case CopyDiagnosticMessage(var container, var message, var warning):
                                         AnsiConsole.MarkupLine(
-                                            $"{container} - " +
+                                            $"{Markup.Escape(container + " - ")}" +
                                             (warning ? $"[yellow]{Markup.Escape(message)}[/]" : Markup.Escape(message))
                                         );
                                         break;
@@ -188,14 +187,15 @@ namespace Wivuu.AzCosmosCopy
                                         task.StopTask();
 
                                         AnsiConsole.MarkupLine(
-                                            $"{container} - [green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
+                                            $"{Markup.Escape(container + " - ")}" +
+                                            $"[green]Done ({task.ElapsedTime?.TotalSeconds:#,0.###}s)[/]"
                                         );
                                         break;
 
                                     case CopyDiagnosticFailed(var container, var e):
                                         task.StopTask();
 
-                                        AnsiConsole.MarkupLine($"{container} - " + e switch
+                                        AnsiConsole.MarkupLine($"{Markup.Escape(container + " - ")}" + e switch
                                         {
                                             TaskCanceledException => "[yellow]Cancelled[/]",
                                             _                     => $"[red]Failed ({Markup.Escape(e.Message)})[/]",
@@ -230,37 +230,48 @@ namespace Wivuu.AzCosmosCopy
             var sourceDb = new CosmosClient(options.Source, options.ClientOptions)
                 .GetDatabase(options.SourceDatabase);
 
-            var containersWithDocs = 
-                from c in GetSourceContainers(sourceDb, cancellationToken)
-                select new CopyDocumentStream(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
-
-            return CopyAsync(containersWithDocs, options, cancellationToken);
-        }
-
-        /// <summary>
-        /// Copy from input container document info to destination
-        /// </summary>
-        public static IAsyncEnumerable<CopyDiagnostic> CopyAsync(
-            CopyContainerInfo ContainerInfo,
-            IAsyncEnumerable<object> Documents,
-            DbCopierDestinationOptions options,
-            CancellationToken cancellationToken = default)
-        {
-            return CopyAsync(CopySingle(), options, cancellationToken);
-
-            async IAsyncEnumerable<CopyDocumentStream> CopySingle()
+            if (options.UseBulk)
             {
-                await Task.Yield();
+                var containersWithDocs = 
+                    from c in GetSourceContainers(sourceDb, cancellationToken)
+                    select new CopyDocumentStream<string>(c, GetDocumentsAsStrings(sourceDb, c.Properties.Id, cancellationToken));
 
-                yield return new CopyDocumentStream(ContainerInfo, Documents);
+                return CopyAsync(containersWithDocs, options, cancellationToken);
+            }
+            else
+            {
+                var containersWithDocs = 
+                    from c in GetSourceContainers(sourceDb, cancellationToken)
+                    select new CopyDocumentStream<object>(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
+
+                return CopyAsync(containersWithDocs, options, cancellationToken);
             }
         }
 
         /// <summary>
         /// Copy from input container document info to destination
         /// </summary>
-        public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync(
-            IAsyncEnumerable<CopyDocumentStream> allContainers,
+        public static IAsyncEnumerable<CopyDiagnostic> CopyAsync<T>(
+            CopyContainerInfo ContainerInfo,
+            IAsyncEnumerable<T> Documents,
+            DbCopierDestinationOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            return CopyAsync(CopySingle(), options, cancellationToken);
+
+            async IAsyncEnumerable<CopyDocumentStream<T>> CopySingle()
+            {
+                await Task.Yield();
+
+                yield return new CopyDocumentStream<T>(ContainerInfo, Documents);
+            }
+        }
+
+        /// <summary>
+        /// Copy from input container document info to destination
+        /// </summary>
+        public static async IAsyncEnumerable<CopyDiagnostic> CopyAsync<T>(
+            IAsyncEnumerable<CopyDocumentStream<T>> allContainers,
             DbCopierDestinationOptions options,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -304,13 +315,16 @@ namespace Wivuu.AzCosmosCopy
                     diag.TryWrite(new CopyDiagnosticMessage("", "Unable to create destination database - may already be copied", warning: true));
                 }
 
-                var buffer = new BufferBlock<CopyDocumentStream>(new ()
+                if (!options.UseBulk && typeof(T) == typeof(string))
+                    diag.TryWrite(new CopyDiagnosticMessage("", "Without bulk enabled, strings must be deserialized anyway", warning: true));
+
+                var buffer = new BufferBlock<CopyDocumentStream<T>>(new ()
                 {
                     BoundedCapacity   = Math.Max(options.MaxContainerBufferSize, options.MaxContainerParallel),
                     CancellationToken = cancellationToken
                 });
 
-                var action = new ActionBlock<CopyDocumentStream>(
+                var action = new ActionBlock<CopyDocumentStream<T>>(
                     options.UseBulk
                         ? CopyBulkFactory
                         : CopyStandardFactory, 
@@ -349,38 +363,40 @@ namespace Wivuu.AzCosmosCopy
             }
 
             // Pipeline which copies a single container using the standard Cosmos API
-            async Task CopyStandardFactory(CopyDocumentStream info)
+            async Task CopyStandardFactory(CopyDocumentStream<T> info)
             {
                 var (container, allDocs) = info;
-                var c     = container.Properties;
+                var properties = container.Properties;
                 var total = container.NumMessages;
 
-                // Disable indexing
-                await using var containerScale = await CreateScaledContainer(c);
-                
-                try
-                {
-                    diag!.TryWrite(new CopyDiagnosticMessage(c.Id, "Copying data..."));
+                // Create dest container w/o indexing
+                await using var containerCompletion = await CreateContainer(properties);
 
-                    if (total == null || total > 0)
+                if (total == null || total > 0)
+                {
+                    try
                     {
+                        diag!.TryWrite(new CopyDiagnosticMessage(properties.Id, "Copying data..."));
+
                         var processed = 0;
 
-                        var buffer = new BufferBlock<object>(new ()
+                        var linkOptions = new DataflowLinkOptions { PropagateCompletion = true };
+
+                        var producer = new BufferBlock<object>(new ()
                         {
                             BoundedCapacity   = Math.Max(options.MaxDocCopyBufferSize, options.MaxDocCopyParallel),
                             CancellationToken = cancellationToken
                         });
 
-                        // Consumer
+                        // Consumer pipeline
                         var consumer = new ActionBlock<object>(
                             async item =>
                             {
-                                await containerScale.Container.UpsertItemAsync(item);
+                                await containerCompletion.Container.UpsertItemAsync(item);
 
                                 var progress = Interlocked.Increment(ref processed);
 
-                                diag!.TryWrite(new CopyDiagnosticProgress(c.Id, progress, total ?? progress));
+                                diag!.TryWrite(new CopyDiagnosticProgress(properties.Id, progress, total ?? progress));
                             },
                             new ()
                             {
@@ -389,63 +405,78 @@ namespace Wivuu.AzCosmosCopy
                                 CancellationToken         = cancellationToken
                             });
 
-                        using (buffer.LinkTo(consumer, new() { PropagateCompletion = true }))
+                        if (typeof(T) == typeof(string))
                         {
-                            try
-                            {
-                                // Retrieve all documents from producer
-                                await foreach (var doc in allDocs)
-                                    await buffer.SendAsync(doc, cancellationToken);
-                            }
-                            finally
-                            {
-                                buffer.Complete();
+                            var deserialize = new TransformBlock<object, object>(
+                                item => Newtonsoft.Json.JsonConvert.DeserializeObject(item as string),
+                                new ()
+                                {
+                                    SingleProducerConstrained = true,
+                                    CancellationToken = cancellationToken,
+                                });
 
-                                await consumer.Completion;
-                            }
+                            producer.LinkTo(deserialize, linkOptions);
+                            deserialize.LinkTo(consumer, linkOptions);
                         }
-                    }
+                        else
+                            producer.LinkTo(consumer, linkOptions);
 
-                    diag.TryWrite(new CopyDiagnosticDone(c.Id));
-                }
-                catch (Exception e)
-                {
-                    diag!.TryWrite(new CopyDiagnosticFailed(c.Id, e));
+                        try
+                        {
+                            // Retrieve all documents from producer
+                            await foreach (var doc in allDocs)
+                                await producer.SendAsync(doc!, cancellationToken);
+                        }
+                        finally
+                        {
+                            producer.Complete();
+
+                            await consumer.Completion;
+                        }
+
+                        diag.TryWrite(new CopyDiagnosticDone(properties.Id));
+                    }
+                    catch (Exception e)
+                    {
+                        diag!.TryWrite(new CopyDiagnosticFailed(properties.Id, e));
+                    }
                 }
             };
         
             // Pipeline which copies a single container using the Bulk Cosmos API
-            async Task CopyBulkFactory(CopyDocumentStream info)
+            async Task CopyBulkFactory(CopyDocumentStream<T> info)
             {
                 var (container, allDocs) = info;
                 var properties = container.Properties;
                 var total = container.NumMessages;
 
-                await using var containerScale = await CreateScaledContainer(properties);
+                // Create dest container w/o indexing
+                await using var containerCompletion = await CreateContainer(properties);
 
-                try
+                if (total == null || total > 0)
                 {
-                    var (uri, key) = options.GetDestinationComponents();
-                    var policy = new Microsoft.Azure.Documents.Client.ConnectionPolicy
+                    try
                     {
-                        ConnectionMode = options.ClientOptions.ConnectionMode == ConnectionMode.Direct 
-                            ? Microsoft.Azure.Documents.Client.ConnectionMode.Direct 
-                            : Microsoft.Azure.Documents.Client.ConnectionMode.Gateway,
-                        ConnectionProtocol = options.ClientOptions.ConnectionMode == ConnectionMode.Direct 
-                            ? Microsoft.Azure.Documents.Client.Protocol.Tcp
-                            : Microsoft.Azure.Documents.Client.Protocol.Https,
-                    };
+                        diag!.TryWrite(new CopyDiagnosticMessage(properties.Id, "Copying data..."));
 
-                    using var destDocClient = new Microsoft.Azure.Documents.Client.DocumentClient(uri, key, policy);
-                    var destCollection = await destDocClient.ReadDocumentCollectionAsync(
-                        Microsoft.Azure.Documents.Client.UriFactory.CreateDocumentCollectionUri(destinationDatabase, properties.Id));
+                        // Set up document client
+                        var (uri, key) = options.GetDestinationComponents();
+                        var policy = new Microsoft.Azure.Documents.Client.ConnectionPolicy
+                        {
+                            ConnectionMode = options.ClientOptions.ConnectionMode == ConnectionMode.Direct 
+                                ? Microsoft.Azure.Documents.Client.ConnectionMode.Direct 
+                                : Microsoft.Azure.Documents.Client.ConnectionMode.Gateway,
+                            ConnectionProtocol = options.ClientOptions.ConnectionMode == ConnectionMode.Direct 
+                                ? Microsoft.Azure.Documents.Client.Protocol.Tcp
+                                : Microsoft.Azure.Documents.Client.Protocol.Https,
+                        };
 
-                    diag!.TryWrite(new CopyDiagnosticMessage(properties.Id, "Copying data..."));
+                        using var destDocClient = new Microsoft.Azure.Documents.Client.DocumentClient(uri, key, policy);
+                        var destCollection = await destDocClient.ReadDocumentCollectionAsync(
+                            Microsoft.Azure.Documents.Client.UriFactory.CreateDocumentCollectionUri(destinationDatabase, properties.Id));
 
-                    if (total == null || total > 0)
-                    {
                         var processed = 0;
-                        
+
                         // Create bulk executor
                         var bulkExecutor = new BulkExecutor(destDocClient, destCollection);
                         await bulkExecutor.InitializeAsync();
@@ -454,6 +485,8 @@ namespace Wivuu.AzCosmosCopy
                         destDocClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 0;
                         destDocClient.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 0;
 
+                        var linkOptions = new DataflowLinkOptions { PropagateCompletion = true };
+
                         // Consumer pipeline
                         var buffer = new BufferBlock<object>(new ()
                         {
@@ -461,16 +494,7 @@ namespace Wivuu.AzCosmosCopy
                             CancellationToken = cancellationToken
                         });
 
-                        var serializer = new TransformBlock<object, string>(
-                            data => Newtonsoft.Json.JsonConvert.SerializeObject(data),
-                            new ()
-                            {
-                                SingleProducerConstrained = true,
-                                CancellationToken = cancellationToken,
-                            }
-                        );
-
-                        var batch = new BatchBlock<string>(
+                        var batch = new BatchBlock<object>(
                             options.MaxDocCopyParallel,
                             new ()
                             {
@@ -478,14 +502,12 @@ namespace Wivuu.AzCosmosCopy
                                 Greedy = true,
                             });
 
-                        var consumer = new ActionBlock<string[]>(
+                        var consumer = new ActionBlock<object[]>(
                             async items =>
                             {
-                                BulkImportResponse response;
-
-                                response = await bulkExecutor.BulkImportAsync(
+                                var response = await bulkExecutor.BulkImportAsync(
                                     documents: items,
-                                    enableUpsert: true,//false,
+                                    enableUpsert: true,
                                     disableAutomaticIdGeneration: true,
                                     maxConcurrencyPerPartitionKeyRange: null,
                                     maxInMemorySortingBatchSize: null,
@@ -505,35 +527,49 @@ namespace Wivuu.AzCosmosCopy
                                 CancellationToken         = cancellationToken
                             });
 
-                        using (buffer.LinkTo(serializer, new () { PropagateCompletion = true }))
-                        using (serializer.LinkTo(batch, new () { PropagateCompletion = true }))
-                        using (batch.LinkTo(consumer, new() { PropagateCompletion = true }))
+                        if (typeof(T) != typeof(string))
                         {
-                            try
-                            {
-                                // Retrieve all documents from producer
-                                await foreach (var doc in allDocs)
-                                    await buffer.SendAsync(doc, cancellationToken);
-                            }
-                            finally
-                            {
-                                buffer.Complete();
+                            var serializer = new TransformBlock<object, string>(
+                                data => Newtonsoft.Json.JsonConvert.SerializeObject(data),
+                                new ()
+                                {
+                                    SingleProducerConstrained = true,
+                                    CancellationToken = cancellationToken,
+                                }
+                            );
 
-                                await consumer.Completion;
-                            }
+                            buffer.LinkTo(serializer, linkOptions);
+                            serializer.LinkTo(batch, linkOptions);
                         }
-                    }
+                        else
+                            buffer.LinkTo(batch, linkOptions);
 
-                    diag.TryWrite(new CopyDiagnosticDone(properties.Id));
-                }
-                catch (Exception e)
-                {
-                    diag!.TryWrite(new CopyDiagnosticFailed(properties.Id, e));
+                        batch.LinkTo(consumer, linkOptions);
+
+                        try
+                        {
+                            // Retrieve all documents from producer
+                            await foreach (var doc in allDocs)
+                                await buffer.SendAsync(doc!, cancellationToken);
+                        }
+                        finally
+                        {
+                            buffer.Complete();
+
+                            await consumer.Completion;
+                        }
+
+                        diag.TryWrite(new CopyDiagnosticDone(properties.Id));
+                    }
+                    catch (Exception e)
+                    {
+                        diag!.TryWrite(new CopyDiagnosticFailed(properties.Id, e));
+                    }
                 }
             };
 
-            // Ensure container exists
-            async Task<CreateScaled> CreateScaledContainer(ContainerProperties c)
+            // Ensure container exists, if not create without index
+            async Task<ContainerCompletion> CreateContainer(ContainerProperties c)
             {
                 // Disable indexing
                 var index = c.IndexingPolicy;
@@ -554,17 +590,25 @@ namespace Wivuu.AzCosmosCopy
                     : null;
 
                 // Create dest container
-                await destClient!.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput);
+                var created = await destClient!.GetDatabase(destinationDatabase).CreateContainerIfNotExistsAsync(c, throughput) switch
+                {
+                    { StatusCode: System.Net.HttpStatusCode.Created } => true,
+                    _ => false
+                };
 
                 var container = destClient.GetContainer(destinationDatabase, c.Id);
 
                 return new(
                     container,
-                    Completion: async () => {
-                        // Enable index
-                        c.IndexingPolicy = index;
+                    async () => 
+                    {
+                        if (created)
+                        {
+                            // Enable index
+                            c.IndexingPolicy = index;
 
-                        await container.ReplaceContainerAsync(c);
+                            await container.ReplaceContainerAsync(c);
+                        }
                     }
                 );
             }
@@ -617,16 +661,55 @@ namespace Wivuu.AzCosmosCopy
                 using var sr = new StreamReader(response.Content);
                 using var jr = new Newtonsoft.Json.JsonTextReader(sr);
 
-                var all = serializer.Deserialize<DocumentContainer>(jr);
+                var all = serializer.Deserialize<DocumentContainer<object>>(jr);
 
                 // Yield back all documents found
                 for (var i = 0; i < all!.Documents.Count; ++i)
                     yield return all.Documents[i];
             }
         }
-
-        record CreateScaled(Container Container, Func<Task> Completion) : System.IAsyncDisposable
+        
+        /// <summary>
+        /// Retrieve all documents from the input container as strings
+        /// </summary>
+        public static async IAsyncEnumerable<string> GetDocumentsAsStrings(
+            Database database,
+            string containerName,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            // Retrieve all documents
+            var container = database.GetContainer(containerName);
+            using var docFeed = container.GetItemQueryStreamIterator();
+            
+            // Producer
+            while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
+            {
+                using var response = await docFeed.ReadNextAsync();
+
+                var all = await System.Text.Json.JsonSerializer.DeserializeAsync<DocumentContainer<System.Text.Json.JsonElement>>(
+                    response.Content
+                );
+
+                // Yield back all documents found
+                for (var i = 0; i < all!.Documents.Count; ++i)
+                {
+                    if (all.Documents[i].ToString() is string docString)
+                        yield return docString;
+                }
+            }
+        }
+
+        class ContainerCompletion : System.IAsyncDisposable
+        {
+            public ContainerCompletion(Container container, Func<Task> completion)
+            {
+                Container  = container;
+                Completion = completion;
+            }
+
+            public Container Container { get; }
+            public Func<Task> Completion { get; }
+
             public async ValueTask DisposeAsync() => await Completion();
         }
     }
@@ -639,16 +722,16 @@ namespace Wivuu.AzCosmosCopy
         int? NumMessages = null
     );
 
-    public record CopyDocumentStream(
+    public record CopyDocumentStream<T>(
         CopyContainerInfo ContainerInfo,
-        IAsyncEnumerable<object> DocumentProducer
+        IAsyncEnumerable<T> DocumentProducer
     );
 
     /// <summary>
     /// Document response container
     /// </summary>
-    public class DocumentContainer
+    public class DocumentContainer<T>
     {
-        public List<object> Documents { get; set; } = default!;
+        public List<T> Documents { get; set; } = default!;
     }
 }
