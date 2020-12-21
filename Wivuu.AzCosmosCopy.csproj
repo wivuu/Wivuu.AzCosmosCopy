@@ -34,10 +34,9 @@
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <VersionPrefix>1.0.7</VersionPrefix>
+    <VersionPrefix>1.0.8</VersionPrefix>
     <ReleaseNotes>
-    - Split destination options from source options
-    - Version separately from tool
+    - Pipeline can now accept documents as string rather than only object
     </ReleaseNotes>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>
