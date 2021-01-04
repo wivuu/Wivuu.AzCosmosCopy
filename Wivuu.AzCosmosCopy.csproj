@@ -34,9 +34,9 @@
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <VersionPrefix>1.0.8</VersionPrefix>
+    <VersionPrefix>1.0.9</VersionPrefix>
     <ReleaseNotes>
-    - Pipeline can now accept documents as string rather than only object
+    - Source copy now querytext filter arguments
     </ReleaseNotes>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>

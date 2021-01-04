@@ -234,7 +234,7 @@ namespace Wivuu.AzCosmosCopy
             {
                 var containersWithDocs = 
                     from c in GetSourceContainers(sourceDb, cancellationToken)
-                    select new CopyDocumentStream<string>(c, GetDocumentsAsStrings(sourceDb, c.Properties.Id, cancellationToken));
+                    select new CopyDocumentStream<string>(c, GetDocumentsAsStrings(sourceDb, c.Properties.Id, null, cancellationToken));
 
                 return CopyAsync(containersWithDocs, options, cancellationToken);
             }
@@ -242,7 +242,7 @@ namespace Wivuu.AzCosmosCopy
             {
                 var containersWithDocs = 
                     from c in GetSourceContainers(sourceDb, cancellationToken)
-                    select new CopyDocumentStream<object>(c, GetDocuments(sourceDb, c.Properties.Id, cancellationToken));
+                    select new CopyDocumentStream<object>(c, GetDocuments(sourceDb, c.Properties.Id, null, cancellationToken));
 
                 return CopyAsync(containersWithDocs, options, cancellationToken);
             }
@@ -645,11 +645,14 @@ namespace Wivuu.AzCosmosCopy
         public static async IAsyncEnumerable<object> GetDocuments(
             Database database,
             string containerName,
+            string? queryText = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // Retrieve all documents
             var container = database.GetContainer(containerName);
-            using var docFeed = container.GetItemQueryStreamIterator();
+            using var docFeed = queryText is not null
+                ? container.GetItemQueryStreamIterator(queryDefinition: new (queryText))
+                : container.GetItemQueryStreamIterator();
 
             var serializer = Newtonsoft.Json.JsonSerializer.CreateDefault();
 
@@ -675,11 +678,14 @@ namespace Wivuu.AzCosmosCopy
         public static async IAsyncEnumerable<string> GetDocumentsAsStrings(
             Database database,
             string containerName,
+            string? queryText = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // Retrieve all documents
             var container = database.GetContainer(containerName);
-            using var docFeed = container.GetItemQueryStreamIterator();
+            using var docFeed = queryText is not null
+                ? container.GetItemQueryStreamIterator(queryDefinition: new (queryText))
+                : container.GetItemQueryStreamIterator();
             
             // Producer
             while (docFeed.HasMoreResults && !cancellationToken.IsCancellationRequested)
