@@ -692,6 +692,8 @@ namespace Wivuu.AzCosmosCopy
             {
                 using var response = await docFeed.ReadNextAsync();
 
+                response.EnsureSuccessStatusCode();
+
                 var all = await System.Text.Json.JsonSerializer.DeserializeAsync<DocumentContainer<System.Text.Json.JsonElement>>(
                     response.Content
                 );
