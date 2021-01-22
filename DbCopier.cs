@@ -573,7 +573,9 @@ namespace Wivuu.AzCosmosCopy
             {
                 // Disable indexing
                 var index = c.IndexingPolicy;
+                var ttl = c.DefaultTimeToLive;
 
+                c.DefaultTimeToLive = null;
                 c.IndexingPolicy = new IndexingPolicy
                 {
                     IndexingMode = IndexingMode.None,
@@ -606,6 +608,7 @@ namespace Wivuu.AzCosmosCopy
                         {
                             // Enable index
                             c.IndexingPolicy = index;
+                            c.DefaultTimeToLive = ttl;
 
                             await container.ReplaceContainerAsync(c);
                         }
