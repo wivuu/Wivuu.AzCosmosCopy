@@ -27,16 +27,16 @@
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' != 'true' ">
-    <VersionPrefix>1.0.6</VersionPrefix>
+    <VersionPrefix>1.0.10</VersionPrefix>
     <ReleaseNotes>
-    - Simplified copier, use underlying serializer rather than stream serializer
+    - Fixed issue copying tables with TTL set
     </ReleaseNotes>
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <VersionPrefix>1.0.9</VersionPrefix>
+    <VersionPrefix>1.0.10</VersionPrefix>
     <ReleaseNotes>
-    - Source copy now querytext filter arguments
+    - Fixed issue copying tables with TTL set
     </ReleaseNotes>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>
