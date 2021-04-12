@@ -34,9 +34,9 @@
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <VersionPrefix>1.0.10</VersionPrefix>
+    <VersionPrefix>1.0.11</VersionPrefix>
     <ReleaseNotes>
-    - Fixed issue copying tables with TTL set
+    - Upgraded dependencies
     </ReleaseNotes>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>
@@ -50,9 +50,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.15.0" />
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.17.1" />
     <PackageReference Include="Microsoft.Azure.CosmosDB.BulkExecutor" Version="2.5.1-preview" />
-    <PackageReference Include="Spectre.Console" Version="0.32.1" />
+    <PackageReference Include="Spectre.Console" Version="0.38.0" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta1.20574.7" />
     <PackageReference Include="System.Linq.Async" Version="5.0.0" />
   </ItemGroup>
