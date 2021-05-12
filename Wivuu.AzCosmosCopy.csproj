@@ -27,16 +27,16 @@
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' != 'true' ">
-    <VersionPrefix>1.0.10</VersionPrefix>
+    <VersionPrefix>1.0.12</VersionPrefix>
     <ReleaseNotes>
-    - Fixed issue copying tables with TTL set
+    - Dont include body in response content
     </ReleaseNotes>
   </PropertyGroup>
   
   <PropertyGroup Condition=" '$(AsLibrary)' == 'true' ">
-    <VersionPrefix>1.0.11</VersionPrefix>
+    <VersionPrefix>1.0.12</VersionPrefix>
     <ReleaseNotes>
-    - Upgraded dependencies
+    - Dont include body in response content
     </ReleaseNotes>
     <OutputType>Library</OutputType>
     <PackAsTool>false</PackAsTool>

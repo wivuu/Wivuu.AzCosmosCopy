@@ -388,11 +388,13 @@ namespace Wivuu.AzCosmosCopy
                             CancellationToken = cancellationToken
                         });
 
+                        var requestOptions = new ItemRequestOptions { EnableContentResponseOnWrite = false };
+
                         // Consumer pipeline
                         var consumer = new ActionBlock<object>(
                             async item =>
                             {
-                                await containerCompletion.Container.UpsertItemAsync(item);
+                                await containerCompletion.Container.UpsertItemAsync(item, requestOptions: requestOptions);
 
                                 var progress = Interlocked.Increment(ref processed);
 
